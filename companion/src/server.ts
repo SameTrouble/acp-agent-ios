@@ -1,6 +1,7 @@
 import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
 import type { AcpClient, InitializeResult } from "./acp";
 import type { CompanionConfig } from "./config";
+import type { SessionManager } from "./session";
 import {
   AppErrorCodes,
   ErrorCodes,
@@ -15,7 +16,7 @@ interface ClientState {
   authenticated: boolean;
 }
 
-const LOCAL_METHODS = new Set(["auth", "initialize"]);
+const LOCAL_METHODS = new Set(["auth", "initialize", "session.list", "session.resume", "session.end"]);
 
 // opencode requires mcpServers on session lifecycle requests; inject an empty
 // default so clients don't have to know.
@@ -25,6 +26,7 @@ export interface CompanionServerOptions {
   config: CompanionConfig;
   acp: AcpClient;
   agentInfo: InitializeResult;
+  sessions: SessionManager;
 }
 
 export class CompanionServer {
@@ -33,15 +35,18 @@ export class CompanionServer {
   private config: CompanionConfig;
   private acp: AcpClient;
   private agentInfo: InitializeResult;
+  private sessions: SessionManager;
 
   constructor(opts: CompanionServerOptions) {
     this.config = opts.config;
     this.acp = opts.acp;
     this.agentInfo = opts.agentInfo;
+    this.sessions = opts.sessions;
   }
 
   async listen(): Promise<void> {
     this.acp.setNotificationHandler(({ method, params }) => {
+      this.sessions.handleNotification(method, params);
       this.broadcast({ jsonrpc: "2.0", method, ...(params !== undefined ? { params } : {}) });
     });
 
@@ -139,7 +144,62 @@ export class CompanionServer {
       this.send(ws, makeResponse(id, this.initializeResult()));
       return;
     }
+    if (method === "session.list") {
+      this.send(ws, makeResponse(id, { sessions: this.sessions.list() }));
+      return;
+    }
+    if (method === "session.resume") {
+      void this.handleSessionResume(ws, id, params);
+      return;
+    }
+    if (method === "session.end") {
+      this.handleSessionEnd(ws, id, params);
+      return;
+    }
     this.send(ws, makeError(id, ErrorCodes.MethodNotFound, `unknown local method ${method}`));
+  }
+
+  private handleSessionEnd(ws: ServerWebSocket<ClientState>, id: string | number, params: unknown): void {
+    const p = (params ?? {}) as Record<string, unknown>;
+    const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+    if (!sessionId) {
+      this.send(ws, makeError(id, ErrorCodes.InvalidParams, "sessionId is required"));
+      return;
+    }
+    const existing = this.sessions.get(sessionId);
+    if (!existing) {
+      this.send(ws, makeError(id, ErrorCodes.InvalidParams, "session not found"));
+      return;
+    }
+    this.sessions.markEnded(sessionId);
+    this.send(ws, makeResponse(id, { ok: true }));
+  }
+
+  private async handleSessionResume(ws: ServerWebSocket<ClientState>, id: string | number, params: unknown): Promise<void> {
+    const p = (params ?? {}) as Record<string, unknown>;
+    const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+    if (!sessionId) {
+      this.send(ws, makeError(id, ErrorCodes.InvalidParams, "sessionId is required"));
+      return;
+    }
+    const existing = this.sessions.get(sessionId);
+    if (!existing) {
+      this.send(ws, makeError(id, ErrorCodes.InvalidParams, "session not found"));
+      return;
+    }
+    try {
+      const acpParams = this.normalizeParams("session/load", { sessionId, mcpServers: p.mcpServers });
+      const result = await this.acp.request("session/load", acpParams);
+      this.sessions.markActive(sessionId);
+      this.send(ws, makeResponse(id, result));
+    } catch (err) {
+      if (err instanceof RpcError) {
+        this.sendError(ws, id, err.code, err.message);
+        return;
+      }
+      const e = err as Error;
+      this.sendError(ws, id, ErrorCodes.InternalError, e.message);
+    }
   }
 
   private initializeResult(): unknown {
@@ -162,6 +222,12 @@ export class CompanionServer {
         return;
       }
       const result = await this.acp.request(msg.method, params);
+      if (msg.method === "session/new") {
+        this.trackNewSession(params, result);
+      } else if (msg.method === "session/prompt") {
+        const p = (params ?? {}) as { sessionId?: string };
+        if (p.sessionId) this.sessions.touch(p.sessionId);
+      }
       this.send(ws, makeResponse(msg.id!, result));
     } catch (err) {
       if (err instanceof RpcError) {
@@ -170,6 +236,14 @@ export class CompanionServer {
       }
       const e = err as Error;
       this.sendError(ws, msg.id ?? 0, ErrorCodes.InternalError, e.message);
+    }
+  }
+
+  private trackNewSession(params: unknown, result: unknown): void {
+    const p = (params ?? {}) as { cwd?: string };
+    const r = (result ?? {}) as { sessionId?: string };
+    if (r.sessionId) {
+      this.sessions.create(r.sessionId, p.cwd ?? "/");
     }
   }
 
