@@ -1,0 +1,17 @@
+{
+  "name": "acp-agent-companion",
+  "version": "0.1.0",
+  "type": "module",
+  "module": "src/main.ts",
+  "private": true,
+  "scripts": {
+    "dev": "bun run src/main.ts",
+    "start": "bun run src/main.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  }
+}
