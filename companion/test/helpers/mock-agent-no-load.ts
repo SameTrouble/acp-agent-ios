@@ -1,3 +1,7 @@
+/**
+ * A mock ACP agent that does NOT declare the `loadSession` capability, and
+ * rejects `session/load`. Used to exercise the live-only degradation path.
+ */
 import { createFramedParser, encodeFrame, isNotification, isRequest, isResponse } from "../../src/rpc";
 
 const SESSION_PREFIX = "sess_";
@@ -21,28 +25,23 @@ function handleRequest(msg: { id: number | string; method: string; params?: unkn
           protocolVersion: 1,
           agentCapabilities: {
             promptCapabilities: { embeddedContext: true },
-            loadSession: true,
           },
-          agentInfo: { name: "mock-agent", version: "1.0.0" },
-          authMethods: [{ id: "agent-login", name: "Agent login" }],
+          agentInfo: { name: "mock-agent-no-load", version: "1.0.0" },
+          authMethods: [],
         },
       });
-    case "authenticate":
-      return encodeFrame({ jsonrpc: "2.0", id: msg.id, result: {} });
     case "session/new": {
       const p = (msg.params ?? {}) as { cwd?: string; mcpServers?: unknown };
       const sessionId = SESSION_PREFIX + Math.random().toString(16).slice(2, 10);
       sessions.set(sessionId, { cwd: p.cwd ?? "/" });
       return encodeFrame({ jsonrpc: "2.0", id: msg.id, result: { sessionId, mcpServers: p.mcpServers } });
     }
-    case "session/load": {
-      const p = (msg.params ?? {}) as { sessionId?: string; mcpServers?: unknown };
-      const sessionId = p.sessionId;
-      if (!sessionId || !sessions.has(sessionId)) {
-        return encodeFrame({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "session not found" } });
-      }
-      return encodeFrame({ jsonrpc: "2.0", id: msg.id, result: { sessionId, mcpServers: p.mcpServers } });
-    }
+    case "session/load":
+      return encodeFrame({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: { code: -32601, message: "session/load is not supported" },
+      });
     case "session/prompt": {
       const p = (msg.params ?? {}) as { sessionId?: string; prompt?: unknown };
       const sessionId = p.sessionId ?? "sess_unknown";
@@ -60,8 +59,7 @@ function handleRequest(msg: { id: number | string; method: string; params?: unkn
 }
 
 const parser = createFramedParser();
-const stdin = Bun.stdin.stream();
-const reader = stdin.getReader();
+const reader = Bun.stdin.stream().getReader();
 const pump = async (): Promise<void> => {
   for (;;) {
     const { done, value } = await reader.read();
@@ -75,10 +73,9 @@ const pump = async (): Promise<void> => {
         continue;
       }
       if (isRequest(msg)) {
-        const out = handleRequest({ id: msg.id as number | string, method: msg.method, params: msg.params });
-        void Bun.stdout.write(out);
+        void Bun.stdout.write(handleRequest({ id: msg.id as number | string, method: msg.method, params: msg.params }));
       } else if (isNotification(msg) || isResponse(msg)) {
-        // notifications / out-of-order responses are ignored by the mock
+        // ignored by the mock
       }
     }
   }

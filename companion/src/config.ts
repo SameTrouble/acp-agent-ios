@@ -4,6 +4,7 @@ export interface CompanionConfig {
   tokens: string[];
   agent: AgentConfig;
   sessionStorePath: string;
+  eventBufferCapacity: number;
 }
 
 export interface AgentConfig {
@@ -22,6 +23,7 @@ const DEFAULT_CONFIG: CompanionConfig = {
     args: ["acp"],
   },
   sessionStorePath: "",
+  eventBufferCapacity: 1000,
 };
 
 export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -77,8 +79,19 @@ export function parseConfig(raw: unknown): CompanionConfig {
   const sessionStorePath = typeof obj.sessionStorePath === "string" && obj.sessionStorePath.length > 0
     ? obj.sessionStorePath
     : defaultSessionStorePath();
+  const eventBufferCapacity = parseEventBufferCapacity(obj.eventBufferCapacity);
 
-  return { host, port, tokens, agent, sessionStorePath };
+  return { host, port, tokens, agent, sessionStorePath, eventBufferCapacity };
+}
+
+function parseEventBufferCapacity(value: unknown): number {
+  if (value === undefined) return DEFAULT_CONFIG.eventBufferCapacity;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(
+      `config "eventBufferCapacity" must be a positive integer, got ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
 }
 
 function parseTokens(value: unknown): string[] {

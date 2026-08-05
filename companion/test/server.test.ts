@@ -18,6 +18,7 @@ const config: CompanionConfig = {
   tokens: ["good-token", "second-token"],
   agent: agentConfig,
   sessionStorePath: "",
+  eventBufferCapacity: 100,
 };
 
 let server: CompanionServer;

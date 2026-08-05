@@ -2,6 +2,7 @@ import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
 import type { AcpClient, InitializeResult } from "./acp";
 import type { CompanionConfig } from "./config";
 import type { SessionManager } from "./session";
+import { SessionEventBuffer } from "./session-event-buffer";
 import {
   AppErrorCodes,
   ErrorCodes,
@@ -22,6 +23,8 @@ const LOCAL_METHODS = new Set(["auth", "initialize", "session.list", "session.re
 // default so clients don't have to know.
 const SESSION_LIFECYCLE_METHODS = new Set(["session/new", "session/load", "session/resume"]);
 
+export type RecoveryMode = "replay" | "snapshot" | "live-only";
+
 export interface CompanionServerOptions {
   config: CompanionConfig;
   acp: AcpClient;
@@ -36,18 +39,26 @@ export class CompanionServer {
   private acp: AcpClient;
   private agentInfo: InitializeResult;
   private sessions: SessionManager;
+  private events: SessionEventBuffer;
 
   constructor(opts: CompanionServerOptions) {
     this.config = opts.config;
     this.acp = opts.acp;
     this.agentInfo = opts.agentInfo;
     this.sessions = opts.sessions;
+    this.events = new SessionEventBuffer(opts.config.eventBufferCapacity);
   }
 
   async listen(): Promise<void> {
     this.acp.setNotificationHandler(({ method, params }) => {
       this.sessions.handleNotification(method, params);
-      this.broadcast({ jsonrpc: "2.0", method, ...(params !== undefined ? { params } : {}) });
+      const cursor = this.recordEvent(method, params);
+      this.broadcast({
+        jsonrpc: "2.0",
+        method,
+        ...(params !== undefined ? { params } : {}),
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
     });
 
     this.server = Bun.serve<ClientState>({
@@ -172,6 +183,7 @@ export class CompanionServer {
       return;
     }
     this.sessions.markEnded(sessionId);
+    this.events.clear(sessionId);
     this.send(ws, makeResponse(id, { ok: true }));
   }
 
@@ -182,16 +194,74 @@ export class CompanionServer {
       this.send(ws, makeError(id, ErrorCodes.InvalidParams, "sessionId is required"));
       return;
     }
+    if (p.cursor !== undefined && !isValidCursor(p.cursor)) {
+      this.send(ws, makeError(id, ErrorCodes.InvalidParams, "cursor must be a non-negative integer"));
+      return;
+    }
     const existing = this.sessions.get(sessionId);
     if (!existing) {
       this.send(ws, makeError(id, ErrorCodes.InvalidParams, "session not found"));
       return;
     }
+
+    // No cursor → load the session fresh from the agent (original behaviour).
+    // Cursor is only sent by clients that were previously connected and kept
+    // track of their last event position.
+    if (typeof p.cursor !== "number") {
+      try {
+        const acpParams = this.normalizeParams("session/load", { sessionId, mcpServers: p.mcpServers });
+        const result = await this.acp.request("session/load", acpParams);
+        this.sessions.markActive(sessionId);
+        this.send(ws, makeResponse(id, result));
+      } catch (err) {
+        if (err instanceof RpcError) {
+          this.sendError(ws, id, err.code, err.message);
+          return;
+        }
+        const e = err as Error;
+        this.sendError(ws, id, ErrorCodes.InternalError, e.message);
+      }
+      return;
+    }
+
+    const cursor = p.cursor;
+    const replay = this.events.replay(sessionId, cursor);
+
+    if (replay) {
+      this.sessions.markActive(sessionId);
+      this.send(ws, makeResponse(id, {
+        sessionId,
+        recovery: "replay" satisfies RecoveryMode,
+        events: replay.events,
+        cursor: replay.latestCursor,
+      }));
+      return;
+    }
+
+    // The cursor is gone from the ring buffer. Fall back to a full snapshot from
+    // the agent if it can replay history, otherwise admit the gap to the client.
+    if (!this.agentSupportsLoadSession()) {
+      this.sessions.markActive(sessionId);
+      this.send(ws, makeResponse(id, {
+        sessionId,
+        recovery: "live-only" satisfies RecoveryMode,
+        events: [],
+        cursor: this.events.latestCursor(sessionId),
+        reason: "agent cannot replay session history; resuming from the live stream only",
+      }));
+      return;
+    }
+
     try {
       const acpParams = this.normalizeParams("session/load", { sessionId, mcpServers: p.mcpServers });
       const result = await this.acp.request("session/load", acpParams);
       this.sessions.markActive(sessionId);
-      this.send(ws, makeResponse(id, result));
+      this.send(ws, makeResponse(id, {
+        ...(typeof result === "object" && result !== null ? result : {}),
+        sessionId,
+        recovery: "snapshot" satisfies RecoveryMode,
+        cursor: this.events.latestCursor(sessionId),
+      }));
     } catch (err) {
       if (err instanceof RpcError) {
         this.sendError(ws, id, err.code, err.message);
@@ -200,6 +270,39 @@ export class CompanionServer {
       const e = err as Error;
       this.sendError(ws, id, ErrorCodes.InternalError, e.message);
     }
+  }
+
+  private agentSupportsLoadSession(): boolean {
+    const caps = this.agentInfo.agentCapabilities;
+    if (typeof caps !== "object" || caps === null) return false;
+    return (caps as { loadSession?: unknown }).loadSession === true;
+  }
+
+  private recordEvent(method: string, params: unknown): number | undefined {
+    if (method !== "session/update") return undefined;
+    const sessionId = this.sessionIdFromParams(params);
+    if (!sessionId) return undefined;
+    const cursor = this.events.record(sessionId, { method, params });
+    this.pruneEventBuffers();
+    return cursor;
+  }
+
+  // Buffers only earn their memory while a session can still be resumed. Ended
+  // sessions are dropped so the footprint tracks live sessions, not the total
+  // number of sessions this process has ever served.
+  private pruneEventBuffers(): void {
+    if (this.events.sessionCount() <= this.sessions.list().length) return;
+    const resumable = this.sessions
+      .list()
+      .filter((s) => s.status !== "ended")
+      .map((s) => s.id);
+    this.events.retainOnly(resumable);
+  }
+
+  private sessionIdFromParams(params: unknown): string | undefined {
+    if (typeof params !== "object" || params === null) return undefined;
+    const p = params as { sessionId?: string };
+    return typeof p.sessionId === "string" ? p.sessionId : undefined;
   }
 
   private initializeResult(): unknown {
@@ -268,4 +371,8 @@ export class CompanionServer {
       }
     }
   }
+}
+
+function isValidCursor(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
