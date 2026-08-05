@@ -1,6 +1,7 @@
 import { AcpClient } from "./acp";
 import { loadConfig } from "./config";
 import { CompanionServer } from "./server";
+import { SessionManager } from "./session";
 
 function log(level: string, message: string): void {
   console.log(`[${new Date().toISOString()}] ${level}: ${message}`);
@@ -9,6 +10,13 @@ function log(level: string, message: string): void {
 async function main(): Promise<void> {
   const configArg = process.argv[2];
   const config = loadConfig(configArg);
+
+  const sessions = new SessionManager(config.sessionStorePath);
+  sessions.load();
+  const restored = sessions.list().length;
+  if (restored > 0) {
+    log("info", `restored ${restored} session(s) from ${config.sessionStorePath}`);
+  }
 
   log("info", "spawning agent subprocess");
   const acp = AcpClient.spawn(config.agent, {
@@ -26,7 +34,7 @@ async function main(): Promise<void> {
       log("info", "agent authentication succeeded");
     }
 
-    const server = new CompanionServer({ config, acp, agentInfo });
+    const server = new CompanionServer({ config, acp, agentInfo, sessions });
     await server.listen();
     log("info", `companion listening on ${server.url} with ${config.tokens.length} token(s)`);
 

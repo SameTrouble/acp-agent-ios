@@ -3,6 +3,7 @@ export interface CompanionConfig {
   port: number;
   tokens: string[];
   agent: AgentConfig;
+  sessionStorePath: string;
 }
 
 export interface AgentConfig {
@@ -20,17 +21,25 @@ const DEFAULT_CONFIG: CompanionConfig = {
     command: "opencode",
     args: ["acp"],
   },
+  sessionStorePath: "",
 };
 
 export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  return `${configBase(env)}/acp-agent/companion.json`;
+}
+
+export function defaultSessionStorePath(env: NodeJS.ProcessEnv = process.env): string {
+  return `${configBase(env)}/acp-agent/sessions.json`;
+}
+
+function configBase(env: NodeJS.ProcessEnv): string {
   const xdg = env.XDG_CONFIG_HOME;
   const home = env.HOME;
-  const base = xdg && xdg.length > 0
+  return xdg && xdg.length > 0
     ? xdg
     : home && home.length > 0
       ? `${home}/.config`
       : ".";
-  return `${base}/acp-agent/companion.json`;
 }
 
 export function loadConfig(
@@ -65,8 +74,11 @@ export function parseConfig(raw: unknown): CompanionConfig {
   const port = parsePort(obj.port);
   const host = typeof obj.host === "string" && obj.host.length > 0 ? obj.host : DEFAULT_CONFIG.host;
   const agent = parseAgent(obj.agent);
+  const sessionStorePath = typeof obj.sessionStorePath === "string" && obj.sessionStorePath.length > 0
+    ? obj.sessionStorePath
+    : defaultSessionStorePath();
 
-  return { host, port, tokens, agent };
+  return { host, port, tokens, agent, sessionStorePath };
 }
 
 function parseTokens(value: unknown): string[] {
