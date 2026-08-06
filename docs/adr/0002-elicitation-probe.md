@@ -1,6 +1,6 @@
 # ADR-002: Elicitation probe — opencode ACP
 
-**Status**: Probe complete, decision deferred.
+**Status**: Probe complete. Final live verification folded into #7's research step.
 **Issue**: #6 — iOS 会话视图
 **Date**: 2026-08-06
 
@@ -51,6 +51,13 @@ future version, the `.unsupported` catch-all will silently swallow it.
 To revisit: add a new case to `SessionUpdate`, a new `TranscriptItem` variant
 (or card view), and an input mode on `SessionDetailView` that renders the
 elicitation's structured fields instead of the free-text input bar.
+
+**Resolution of the deferral (2026-08-06):** the final live verification —
+running the real opencode binary against the companion and watching for
+unknown variants — is folded into issue #7's prerequisite research, which
+must run the real binary anyway to confirm the `request_permission` wire
+shape. That one live session answers both questions; no separate
+elicitation-only probe will be done.
 
 ## Consequences
 
