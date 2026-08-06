@@ -38,6 +38,8 @@ the stream. The opencode ACP mode we are targeting sends these known variants:
 | `user_message_chunk` | echo of user prompt |
 | `tool_call` / `tool_call_update` | tool call start / status change |
 | `plan` | current plan entries |
+| `available_commands_update` | slash-command list (added by live probe, #22) |
+| `usage_update` | token accounting `{used, size, cost}` (added by live probe, #22) |
 
 Anything else is decoded as `SessionUpdate.unsupported(«raw variant name»)`
 and ignored by the transcript. No UI card is rendered.
@@ -52,12 +54,17 @@ To revisit: add a new case to `SessionUpdate`, a new `TranscriptItem` variant
 (or card view), and an input mode on `SessionDetailView` that renders the
 elicitation's structured fields instead of the free-text input bar.
 
-**Resolution of the deferral (2026-08-06):** the final live verification —
-running the real opencode binary against the companion and watching for
-unknown variants — is folded into issue #7's prerequisite research, which
-must run the real binary anyway to confirm the `request_permission` wire
-shape. That one live session answers both questions; no separate
-elicitation-only probe will be done.
+**Resolution of the deferral (2026-08-06):** the final live verification
+was completed as part of issue #22 — real opencode 1.18.13 sessions were
+driven through `companion/scripts/observe-wire.ts` (initialize →
+authenticate → session/new → session/prompt, six scenarios including
+permission-trigger and reject paths). **`elicitation/create` did not
+appear in any session**, and no elicitation variant of any name was
+observed. The definitive list of observed variants — including the two
+additions `available_commands_update` and `usage_update` (see table
+above) — is recorded in ADR-005, which also carries the live-verified
+`session/request_permission` wire shape. The deferral is closed: no
+elicitation card is built, and no further probe is planned.
 
 ## Consequences
 
