@@ -1,6 +1,37 @@
 import Combine
 import Foundation
 
+/// One fuzzy-match result from the companion's `files.search`. The path is
+/// relative to the session's working directory — exactly what a `file_ref`
+/// prompt block expects (issue #8).
+public struct FileSearchResult: Decodable, Equatable, Sendable {
+    public let path: String
+    public let score: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case path, score
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        path = try container.decode(String.self, forKey: .path)
+        score = try container.decodeIfPresent(Int.self, forKey: .score)
+    }
+}
+
+public struct FileSearchResponse: Decodable, Equatable, Sendable {
+    public let files: [FileSearchResult]
+
+    enum CodingKeys: String, CodingKey {
+        case files
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        files = try container.decodeIfPresent([FileSearchResult].self, forKey: .files) ?? []
+    }
+}
+
 @MainActor
 public final class ACPClient: ObservableObject {
     public enum ConnectionState: Equatable, Sendable {
@@ -166,6 +197,14 @@ public final class ACPClient: ObservableObject {
         try await conversationStore.sendPrompt(sessionId: sessionId, text: text)
     }
 
+    /// Sends a structured prompt (text + `file_ref` references) to the session.
+    /// Reference blocks are expanded by the companion into content the agent
+    /// reads (issue #8).
+    @discardableResult
+    public func sendPrompt(sessionId: String, prompt: [PromptBlock]) async throws -> String? {
+        try await conversationStore.sendPrompt(sessionId: sessionId, prompt: prompt)
+    }
+
     /// Issues a `session/cancel` notification to stop the current generation.
     /// Safe to call repeatedly; a no-op when nothing is in flight.
     public func cancelSession(id sessionId: String) async throws {
@@ -179,6 +218,24 @@ public final class ACPClient: ObservableObject {
         try await conversationStore.respondToPermission(sessionId: sessionId, requestId: requestId, option: option)
         // Keep the session-list pending badge in step with the resolution.
         Task { _ = try? await self.refreshSessions() }
+    }
+
+    // MARK: - File search (@ references)
+
+    /// Fuzzy-searches the session's working directory via the companion's
+    /// `files.search` (issue #8, built on #4). Paths are relative to the
+    /// session cwd, ready to attach as `file_ref` prompt blocks.
+    public func searchFiles(sessionId: String, query: String, limit: Int = 20) async throws -> [FileSearchResult] {
+        guard connectionState == .connected else {
+            throw ConnectionError.notConnected
+        }
+        let result = try await rpc.request("files.search", params: [
+            "sessionId": AnyCodable(sessionId),
+            "query": AnyCodable(query),
+            "limit": AnyCodable(limit),
+        ])
+        let response = try result.decode(FileSearchResponse.self)
+        return response.files
     }
 
     // MARK: - Persistence helpers

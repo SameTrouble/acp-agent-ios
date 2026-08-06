@@ -103,6 +103,10 @@ public struct SessionTranscript: Equatable, Sendable {
         case .plan(let entries):
             planEntries = entries
             isGenerating = true
+        case .availableCommands:
+            // Session-level command directory; consumed by the conversation
+            // (see `SessionConversation.apply`) and rendered by the input bar.
+            break
         case .unsupported:
             break
         }

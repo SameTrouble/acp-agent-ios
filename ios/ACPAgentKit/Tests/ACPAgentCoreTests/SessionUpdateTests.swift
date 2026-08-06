@@ -144,6 +144,49 @@ import Testing
         #expect(entries[1].status == .pending)
     }
 
+    @Test func decodesAvailableCommandsUpdate() throws {
+        // Live-verified wire shape (ADR-005): opencode pushes the slash-command
+        // directory after session/new; client-side commands are already
+        // filtered out by the agent.
+        let notification = try decode(#"""
+        {"sessionId":"s1","update":{"sessionUpdate":"available_commands_update","availableCommands":[
+          {"name":"code-review","description":"Review the changes since a fixed point."},
+          {"name":"init","description":"guided AGENTS.md setup"}
+        ]}}
+        """#)
+
+        guard case .availableCommands(let commands) = notification.update else {
+            Issue.record("Expected availableCommands, got \(notification.update)")
+            return
+        }
+        #expect(commands.count == 2)
+        #expect(commands[0].name == "code-review")
+        #expect(commands[0].description == "Review the changes since a fixed point.")
+        #expect(commands[1].name == "init")
+        #expect(commands[1].description == "guided AGENTS.md setup")
+    }
+
+    @Test func availableCommandsUpdateRoundTripsThroughEncoder() throws {
+        let notification = SessionUpdateNotification(
+            sessionId: "s1",
+            update: .availableCommands([
+                AvailableCommand(name: "tdd", description: "Test-driven development."),
+                AvailableCommand(name: "init"),
+            ])
+        )
+
+        let data = try JSONEncoder().encode(notification)
+        let decoded = try JSONDecoder().decode(SessionUpdateNotification.self, from: data)
+
+        #expect(decoded == notification)
+        guard case .availableCommands(let commands) = decoded.update else {
+            Issue.record("Expected availableCommands")
+            return
+        }
+        #expect(commands[0] == AvailableCommand(name: "tdd", description: "Test-driven development."))
+        #expect(commands[1] == AvailableCommand(name: "init", description: nil))
+    }
+
     @Test func unrecognisedVariantDecodesAsUnsupported() throws {
         let notification = try decode(#"""
         {"sessionId":"s1","update":{"sessionUpdate":"current_mode_update","currentModeId":"build"}}

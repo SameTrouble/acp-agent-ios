@@ -72,18 +72,38 @@ final class ConversationStore: ObservableObject {
     /// in flight.
     @discardableResult
     func sendPrompt(sessionId: String, text: String) async throws -> String? {
+        try await sendPrompt(sessionId: sessionId, prompt: [.text(text)])
+    }
+
+    /// Sends a structured prompt (text + `file_ref` references) to the session.
+    /// Reference blocks survive verbatim on the wire so the companion can
+    /// expand them into content blocks the agent reads (issue #8). The
+    /// optimistic bubble shows the text plus one 📎 line per reference.
+    @discardableResult
+    func sendPrompt(sessionId: String, prompt: [PromptBlock]) async throws -> String? {
         guard isConnected() else {
             throw ConnectionError.notConnected
         }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        // Drop blank text blocks; keep references. An all-blank prompt is an
+        // error, same as the legacy text-only guard below.
+        let blocks = prompt.compactMap { block -> PromptBlock? in
+            switch block {
+            case .text(let text):
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : .text(trimmed)
+            case .fileRef:
+                return block
+            }
+        }
+        guard !blocks.isEmpty else {
             throw ConnectionError.rpcError(code: -32602, message: "Empty prompt")
         }
 
+        let bubbleText = blocks.map(\.displayText).joined(separator: "\n")
         mutateConversation(sessionId) { conv in
             conv.isSending = true
             conv.errorMessage = nil
-            conv.transcript.appendLocalUserMessage(trimmed)
+            conv.transcript.appendLocalUserMessage(bubbleText)
         }
         defer {
             mutateConversation(sessionId) { conv in
@@ -92,13 +112,17 @@ final class ConversationStore: ObservableObject {
             }
         }
 
-        let block: [String: AnyCodable] = [
-            "type": AnyCodable("text"),
-            "text": AnyCodable(trimmed),
-        ]
+        let wireBlocks = blocks.map { block -> AnyCodable in
+            switch block {
+            case .text(let text):
+                return AnyCodable(["type": AnyCodable("text"), "text": AnyCodable(text)])
+            case .fileRef(let path):
+                return AnyCodable(["type": AnyCodable("file_ref"), "path": AnyCodable(path)])
+            }
+        }
         let params: [String: AnyCodable] = [
             "sessionId": AnyCodable(sessionId),
-            "prompt": AnyCodable([AnyCodable(block)]),
+            "prompt": AnyCodable(wireBlocks),
         ]
 
         do {
