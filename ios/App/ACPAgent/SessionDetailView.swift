@@ -24,7 +24,15 @@ struct SessionDetailView: View {
                                 case .message(let message):
                                     MessageBubble(message: message)
                                 case .toolCall(let card):
-                                    ToolCallCardView(call: card)
+                                    if card.diffs.isEmpty {
+                                        ToolCallCardView(call: card)
+                                    } else {
+                                        // Issue #9: file-editing calls render as one
+                                        // collapsible diff card per modified file.
+                                        ForEach(card.diffs, id: \.path) { diff in
+                                            DiffCardView(diff: diff, status: card.status, outputText: card.content)
+                                        }
+                                    }
                                 case .approval(let card):
                                     ApprovalCardView(card: card) { option in
                                         respondToApproval(card: card, option: option)
@@ -247,7 +255,7 @@ private struct ToolCallCardView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: call.kind.systemImage)
-                .foregroundStyle(statusColor)
+                .foregroundStyle(call.status.statusColor)
                 .frame(width: 24, height: 24)
 
             VStack(alignment: .leading, spacing: 6) {
@@ -287,17 +295,8 @@ private struct ToolCallCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(statusColor.opacity(0.3), lineWidth: 1)
+                .stroke(call.status.statusColor.opacity(0.3), lineWidth: 1)
         )
-    }
-
-    private var statusColor: Color {
-        switch call.status {
-        case .pending: return .orange
-        case .running, .inProgress: return .blue
-        case .completed: return .green
-        case .error, .failed: return .red
-        }
     }
 
     private var statusBadge: some View {
@@ -306,22 +305,12 @@ private struct ToolCallCardView: View {
                 ProgressView()
                     .controlSize(.mini)
             } else {
-                Image(systemName: statusIcon)
-                    .foregroundStyle(statusColor)
+                Image(systemName: call.status.systemImage)
+                    .foregroundStyle(call.status.statusColor)
             }
             Text(call.status.displayName)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-        }
-    }
-
-    private var statusIcon: String {
-        switch call.status {
-        case .pending: return "clock"
-        case .running: return "play.circle"
-        case .inProgress: return "hourglass"
-        case .completed: return "checkmark.circle.fill"
-        case .error, .failed: return "xmark.circle.fill"
         }
     }
 }

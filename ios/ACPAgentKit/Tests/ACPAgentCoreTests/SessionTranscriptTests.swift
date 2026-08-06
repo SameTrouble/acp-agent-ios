@@ -157,6 +157,55 @@ import Testing
         #expect(transcript.toolCalls[0].kind == .edit)
     }
 
+    @Test func toolCallUpdateCarriesDiffsOntoTheCard() {
+        // Live-verified (issue #9): diffs arrive on the final update, so the
+        // card starts without diffs and gains them via merge.
+        var transcript = SessionTranscript()
+
+        transcript.apply(.toolCall(.init(
+            toolCallId: "tc1",
+            title: "Edit",
+            kind: .edit,
+            status: .pending
+        )))
+        transcript.apply(.toolCallUpdate(.init(
+            toolCallId: "tc1",
+            status: .completed,
+            content: ["Edit applied successfully."],
+            diffs: [FileDiff(path: "/p/a.txt", oldText: "a", newText: "b")]
+        )))
+
+        let card = transcript.toolCalls[0]
+        #expect(card.status == .completed)
+        #expect(card.content == ["Edit applied successfully."])
+        #expect(card.diffs.count == 1)
+        #expect(card.diffs[0].path == "/p/a.txt")
+        #expect(card.diffs[0].addedCount == 1)
+        #expect(card.diffs[0].removedCount == 1)
+    }
+
+    @Test func toolCallDiffWithSamePathReplacesPrevious() {
+        var card = ToolCallCard(delta: .init(toolCallId: "tc1", kind: .edit, status: .pending))
+        card.merge(.init(toolCallId: "tc1", diffs: [FileDiff(path: "/p/a.txt", oldText: "a", newText: "b")]))
+        card.merge(.init(toolCallId: "tc1", diffs: [FileDiff(path: "/p/a.txt", oldText: "a", newText: "c")]))
+
+        #expect(card.diffs.count == 1)
+        #expect(card.diffs[0].newText == "c")
+    }
+
+    @Test func toolCallDiffMultipleFilesStaySeparate() {
+        var card = ToolCallCard(delta: .init(toolCallId: "tc1", kind: .edit, status: .pending))
+        card.merge(.init(
+            toolCallId: "tc1",
+            diffs: [
+                FileDiff(path: "/p/a.txt", oldText: "a", newText: "b"),
+                FileDiff(path: "/p/b.txt", oldText: "x", newText: "y"),
+            ]
+        ))
+
+        #expect(card.diffs.map(\.path) == ["/p/a.txt", "/p/b.txt"])
+    }
+
     @Test func unsupportedUpdatesAreIgnored() {
         var transcript = SessionTranscript()
 

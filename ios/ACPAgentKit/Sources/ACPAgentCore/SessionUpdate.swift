@@ -45,14 +45,20 @@ public struct ToolCallDelta: Codable, Equatable, Sendable {
     public let status: ToolCallStatus?
     public let locations: [String]?
     public let content: [String]?
+    /// Structurally decoded `{type: "diff"}` content blocks (issue #9): the
+    /// per-file old/new texts an edit tool touched, with the unified diff
+    /// computed client-side (live-verified on opencode 1.18.13 — diffs ride
+    /// the final `tool_call_update`, not the opening `tool_call`).
+    public let diffs: [FileDiff]?
 
-    public init(toolCallId: String, title: String? = nil, kind: ToolCallKind? = nil, status: ToolCallStatus? = nil, locations: [String]? = nil, content: [String]? = nil) {
+    public init(toolCallId: String, title: String? = nil, kind: ToolCallKind? = nil, status: ToolCallStatus? = nil, locations: [String]? = nil, content: [String]? = nil, diffs: [FileDiff]? = nil) {
         self.toolCallId = toolCallId
         self.title = title
         self.kind = kind
         self.status = status
         self.locations = locations
         self.content = content
+        self.diffs = diffs
     }
 }
 
@@ -248,7 +254,7 @@ extension SessionUpdateNotification {
         let kindRaw = try container.decodeIfPresent(String.self, forKey: .kind)
         let statusRaw = try container.decodeIfPresent(String.self, forKey: .status)
         let locations = try decodeLocations(from: container)
-        let content = try decodeToolCallContent(from: container)
+        let (content, diffs) = try decodeToolCallContent(from: container)
 
         let kind: ToolCallKind?
         if let raw = kindRaw {
@@ -270,7 +276,8 @@ extension SessionUpdateNotification {
             kind: kind,
             status: status,
             locations: locations,
-            content: content
+            content: content,
+            diffs: diffs
         )
     }
 
@@ -286,28 +293,34 @@ extension SessionUpdateNotification {
         }
     }
 
-    private static func decodeToolCallContent(from container: KeyedDecodingContainer<UpdateKeys>) throws -> [String]? {
-        guard container.contains(.content) else { return nil }
+    /// Splits the content array into renderable text blocks and structurally
+    /// decoded diff blocks (ADR-003: known wire variants decode even when the
+    /// UI has no surface for them yet). `nil` when the whole key is absent.
+    private static func decodeToolCallContent(from container: KeyedDecodingContainer<UpdateKeys>) throws -> (content: [String]?, diffs: [FileDiff]?) {
+        guard container.contains(.content) else { return (nil, nil) }
         let contentArray = try container.decode([AnyCodable].self, forKey: .content)
-        return contentArray.compactMap { item in
+        var texts: [String] = []
+        var diffs: [FileDiff] = []
+        for item in contentArray {
             guard let dict = item.value.base as? [String: AnyCodable],
-                  let type = dict["type"]?.value.base as? String else { return nil }
+                  let type = dict["type"]?.value.base as? String else { continue }
             switch type {
             case "content":
                 if let inner = dict["content"]?.value.base as? [String: AnyCodable],
                    let innerType = inner["type"]?.value.base as? String,
                    innerType == "text",
                    let text = inner["text"]?.value.base as? String {
-                    return text
+                    texts.append(text)
                 }
-                return nil
             case "diff":
-                let path = (dict["path"]?.value.base as? String) ?? ""
-                return "Diff: \(path)"
+                if let diff = FileDiff.decode(from: item) {
+                    diffs.append(diff)
+                }
             default:
-                return nil
+                break
             }
         }
+        return (texts, diffs)
     }
 }
 
@@ -325,6 +338,18 @@ extension ToolCallStatus {
 
     public var isTerminal: Bool {
         self == .completed || self == .error || self == .failed
+    }
+
+    /// SF Symbol for the status badge, shared by every card that renders a
+    /// tool call (same convention as `ToolCallKind.systemImage`).
+    public var systemImage: String {
+        switch self {
+        case .pending: return "clock"
+        case .running: return "play.circle"
+        case .inProgress: return "hourglass"
+        case .completed: return "checkmark.circle.fill"
+        case .error, .failed: return "xmark.circle.fill"
+        }
     }
 }
 
