@@ -68,6 +68,60 @@ public struct PromptResponse: Decodable, Equatable, Sendable {
     public let stopReason: String?
 }
 
+/// One content block of a prompt sent via `session/prompt`. Text blocks go
+/// through verbatim; `fileRef` blocks are expanded by the companion into
+/// `resource` / `resource_link` content the agent can actually read
+/// (issue #8, built on #4's `file_ref` expansion).
+public enum PromptBlock: Equatable, Sendable {
+    case text(String)
+    case fileRef(path: String)
+
+    /// The user-visible line for the optimistic transcript bubble.
+    var displayText: String {
+        switch self {
+        case .text(let text): return text
+        case .fileRef(let path): return "📎 \(path)"
+        }
+    }
+}
+
+/// Which suggestion panel the input bar shows for a piece of input text, and
+/// what to filter by. `commands` comes from the session's
+/// `available_commands_update`; `files` from the companion's `files.search`.
+/// Kept in Core so the trigger semantics are unit-testable without a SwiftUI
+/// host (ADR-001).
+public enum PromptTrigger: Equatable, Sendable {
+    case commands(query: String)
+    case files(query: String)
+
+    /// Parses input text into a trigger: a leading `/` opens the command panel
+    /// (hidden once the query contains a space — i.e. after a command was
+    /// picked and arguments follow); a leading `@` opens the file panel with
+    /// the rest of the input as the fuzzy-search query.
+    public static func parse(text: String) -> PromptTrigger? {
+        if text.hasPrefix("/") {
+            let query = String(text.dropFirst())
+            guard !query.contains(where: \.isWhitespace) else { return nil }
+            return .commands(query: query)
+        }
+        if text.hasPrefix("@") {
+            return .files(query: String(text.dropFirst()))
+        }
+        return nil
+    }
+
+    /// Commands matching the trigger's query, or all commands for an empty
+    /// query. A command matches when its name or description contains the
+    /// query.
+    public func filteredCommands(from available: [AvailableCommand]) -> [AvailableCommand] {
+        guard case .commands(let query) = self, !query.isEmpty else { return available }
+        return available.filter { command in
+            command.name.localizedCaseInsensitiveContains(query)
+                || (command.description?.localizedCaseInsensitiveContains(query) ?? false)
+        }
+    }
+}
+
 /// Everything the session detail screen needs for one session: the rendered
 /// transcript, how far through the event stream we are, and the in-flight state
 /// of the send/cancel controls.
@@ -81,6 +135,10 @@ public struct SessionConversation: Equatable, Sendable {
     public var isResuming = false
     public var isSending = false
     public var errorMessage: String?
+    /// The agent's slash-command directory for this session, replaced
+    /// wholesale on every `available_commands_update` (ADR-005). Not part of
+    /// the transcript — it feeds the input bar's `/` menu.
+    public var availableCommands: [AvailableCommand] = []
 
     public init() {}
 
@@ -92,7 +150,12 @@ public struct SessionConversation: Equatable, Sendable {
 
     mutating func apply(_ update: SessionUpdate, cursor incoming: Int?) {
         guard shouldApply(cursor: incoming) else { return }
-        transcript.apply(update)
+        switch update {
+        case .availableCommands(let commands):
+            availableCommands = commands
+        default:
+            transcript.apply(update)
+        }
         advanceCursor(to: incoming)
     }
 

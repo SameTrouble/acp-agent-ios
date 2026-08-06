@@ -111,6 +111,96 @@ import Testing
         }
     }
 
+    @Test func sendStructuredPromptSendsFileRefBlocksAndShowsClipBubble() async throws {
+        let transport = MockWebSocketTransport()
+        transport.responders["session/prompt"] = { id, _ in
+            successResponse(id: id, resultJSON: #"{"stopReason":"end_turn"}"#)
+        }
+        let store = makeStore(transport)
+
+        let prompt: [PromptBlock] = [
+            .text("what does this file do?"),
+            .fileRef(path: "ios/App/ACPAgent/SessionDetailView.swift"),
+        ]
+        let stopReason = try await store.sendPrompt(sessionId: "s1", prompt: prompt)
+
+        #expect(stopReason == "end_turn")
+        let conversation = store.conversation(for: "s1")
+        #expect(conversation.transcript.messages.count == 1)
+        // The optimistic bubble shows the text plus one 📎 line per reference.
+        #expect(conversation.transcript.messages[0].text.contains("what does this file do?"))
+        #expect(conversation.transcript.messages[0].text.contains("📎 ios/App/ACPAgent/SessionDetailView.swift"))
+
+        let promptRequest = transport.sentRequests().first { $0.method == "session/prompt" }
+        let blocks = promptRequest?.params?["prompt"]?.value.base as? [AnyCodable]
+        #expect(blocks?.count == 2)
+        let textBlock = blocks?[0].value.base as? [String: AnyCodable]
+        #expect(textBlock?["type"]?.value.base as? String == "text")
+        #expect(textBlock?["text"]?.value.base as? String == "what does this file do?")
+        let refBlock = blocks?[1].value.base as? [String: AnyCodable]
+        #expect(refBlock?["type"]?.value.base as? String == "file_ref")
+        #expect(refBlock?["path"]?.value.base as? String == "ios/App/ACPAgent/SessionDetailView.swift")
+    }
+
+    @Test func sendStructuredPromptDropsBlankTextButKeepsReferences() async throws {
+        let transport = MockWebSocketTransport()
+        transport.responders["session/prompt"] = { id, _ in
+            successResponse(id: id, resultJSON: #"{"stopReason":"end_turn"}"#)
+        }
+        let store = makeStore(transport)
+
+        _ = try await store.sendPrompt(sessionId: "s1", prompt: [
+            .text("   "),
+            .fileRef(path: "README.md"),
+        ])
+
+        let promptRequest = transport.sentRequests().first { $0.method == "session/prompt" }
+        let blocks = promptRequest?.params?["prompt"]?.value.base as? [AnyCodable]
+        #expect(blocks?.count == 1)
+        let refBlock = blocks?[0].value.base as? [String: AnyCodable]
+        #expect(refBlock?["type"]?.value.base as? String == "file_ref")
+        #expect(refBlock?["path"]?.value.base as? String == "README.md")
+    }
+
+    @Test func sendAllBlankStructuredPromptThrows() async {
+        let store = makeStore(MockWebSocketTransport())
+
+        await #expect(throws: ConnectionError.rpcError(code: -32602, message: "Empty prompt")) {
+            try await store.sendPrompt(sessionId: "s1", prompt: [.text("  \n ")])
+        }
+        #expect(store.conversation(for: "s1").transcript.items.isEmpty)
+    }
+
+    @Test func applyAvailableCommandsUpdateReplacesDirectoryOutsideTranscript() {
+        let store = makeStore(MockWebSocketTransport())
+
+        store.applySessionUpdate(
+            SessionUpdateNotification(
+                sessionId: "s1",
+                update: .availableCommands([AvailableCommand(name: "tdd", description: "TDD")])
+            ),
+            cursor: 1
+        )
+        store.applySessionUpdate(
+            SessionUpdateNotification(
+                sessionId: "s1",
+                update: .availableCommands([AvailableCommand(name: "init"), AvailableCommand(name: "review")])
+            ),
+            cursor: 2
+        )
+
+        let conversation = store.conversation(for: "s1")
+        // The directory is replaced wholesale, not appended.
+        #expect(conversation.availableCommands == [
+            AvailableCommand(name: "init"),
+            AvailableCommand(name: "review"),
+        ])
+        // Command directory is session state, not transcript content.
+        #expect(conversation.transcript.items.isEmpty)
+        // It still participates in cursor tracking.
+        #expect(conversation.cursor == 2)
+    }
+
     // MARK: - cancel
 
     @Test func cancelSendsNotificationNotRequest() async throws {

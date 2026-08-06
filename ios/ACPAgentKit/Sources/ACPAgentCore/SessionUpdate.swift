@@ -70,6 +70,21 @@ public struct ContentBlock: Equatable, Sendable {
     var displayText: String { text }
 }
 
+/// One slash command the agent advertises for the current session. Comes from
+/// the live-observed `available_commands_update` wire variant (ADR-005): the
+/// agent already filters out client-side commands (new session, cancel, theme,
+/// …), so everything here is prompt-able via `session/prompt` with a
+/// `/name args` text block.
+public struct AvailableCommand: Codable, Equatable, Sendable {
+    public let name: String
+    public let description: String?
+
+    public init(name: String, description: String? = nil) {
+        self.name = name
+        self.description = description
+    }
+}
+
 public enum SessionUpdate: Equatable, Sendable {
     case agentMessageChunk(ContentBlock)
     case agentThoughtChunk(ContentBlock)
@@ -77,6 +92,10 @@ public enum SessionUpdate: Equatable, Sendable {
     case toolCall(ToolCallDelta)
     case toolCallUpdate(ToolCallDelta)
     case plan([PlanEntry])
+    /// The agent's current slash-command directory for this session
+    /// (`available_commands_update`, live-verified in ADR-005). Replaces the
+    /// previous list wholesale; the UI renders it as the `/` menu.
+    case availableCommands([AvailableCommand])
     /// Elicitation/probe note (issue #6): opencode's ACP mode does NOT appear
     /// to emit `elicitation/create` — all unrecognised `sessionUpdate`
     /// variants fall through here and are silently dropped. The UI renders
@@ -114,6 +133,7 @@ extension SessionUpdateNotification {
         case status
         case locations
         case entries
+        case availableCommands
     }
 
     public init(from decoder: Decoder) throws {
@@ -140,6 +160,9 @@ extension SessionUpdateNotification {
         case "plan":
             let entries = try updateContainer.decode([PlanEntry].self, forKey: .entries)
             update = .plan(entries)
+        case "available_commands_update":
+            let commands = try updateContainer.decode([AvailableCommand].self, forKey: .availableCommands)
+            update = .availableCommands(commands)
         default:
             update = .unsupported(variantRaw)
         }
@@ -172,6 +195,9 @@ extension SessionUpdateNotification {
         case .plan(let entries):
             try updateContainer.encode("plan", forKey: .sessionUpdate)
             try updateContainer.encode(entries, forKey: .entries)
+        case .availableCommands(let commands):
+            try updateContainer.encode("available_commands_update", forKey: .sessionUpdate)
+            try updateContainer.encode(commands, forKey: .availableCommands)
         case .unsupported(let raw):
             try updateContainer.encode(raw, forKey: .sessionUpdate)
         }

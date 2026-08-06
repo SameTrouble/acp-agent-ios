@@ -5,7 +5,6 @@ struct SessionDetailView: View {
     @EnvironmentObject var client: ACPClient
     let sessionId: String
 
-    @State private var inputText = ""
     @State private var scrollProxy: ScrollViewProxy?
 
     private var conversation: SessionConversation {
@@ -56,11 +55,10 @@ struct SessionDetailView: View {
                 )
             }
 
-            InputBar(
-                text: $inputText,
-                isSending: conversation.isSending,
-                isGenerating: conversation.transcript.isGenerating,
-                onSend: send,
+            PromptInputBar(
+                sessionId: sessionId,
+                availableCommands: conversation.availableCommands,
+                canCancel: conversation.canCancel,
                 onCancel: cancel
             )
         }
@@ -114,14 +112,6 @@ struct SessionDetailView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(tint.opacity(0.08))
-    }
-
-    private func send() {
-        let text = inputText
-        inputText = ""
-        Task {
-            _ = try? await client.sendPrompt(sessionId: sessionId, text: text)
-        }
     }
 
     private func cancel() {
@@ -502,71 +492,8 @@ private struct TypingIndicator: View {
 
 // MARK: - Input bar
 
-private struct InputBar: View {
-    @Binding var text: String
-    let isSending: Bool
-    let isGenerating: Bool
-    let onSend: () -> Void
-    let onCancel: () -> Void
-
-    @FocusState private var isFocused: Bool
-
-    private var canCancel: Bool { isSending || isGenerating }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            TextField("Message the agent…", text: $text, axis: .vertical)
-                .textFieldStyle(.plain)
-                .focused($isFocused)
-                .lineLimit(1...6)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(.quaternary.opacity(0.5))
-                )
-                .disabled(canCancel)
-
-            if canCancel {
-                Button(action: onCancel) {
-                    Image(systemName: "stop.fill")
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: 36)
-                        .background(.red)
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Cancel")
-            } else {
-                Button(action: onSend) {
-                    Image(systemName: "paperplane.fill")
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: 36)
-                        .background(canSend ? Color.accentColor : Color.gray.opacity(0.4))
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
-                .accessibilityLabel("Send")
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
-        .overlay(alignment: .top) {
-            Divider()
-        }
-        .onSubmit(sendIfPossible)
-    }
-
-    private var canSend: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private func sendIfPossible() {
-        if canSend { onSend() }
-    }
-}
+// The session input area (text + @-reference chips + /-command panel) lives in
+// `PromptInputBar.swift`.
 
 #Preview {
     NavigationStack {

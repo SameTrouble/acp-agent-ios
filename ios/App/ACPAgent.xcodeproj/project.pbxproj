@@ -10,9 +10,10 @@
 		3338D730C0C3C7A4F4EB9746 /* ACPAgentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBE48C15D7460E71C2CCFFE /* ACPAgentApp.swift */; };
 		61044EDD550416BE82270823 /* ACPAgentCore in Frameworks */ = {isa = PBXBuildFile; productRef = A7221E13E49A7639D75D45B1 /* ACPAgentCore */; };
 		83DA9DAAA34994226987003F /* SessionListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BAA10F70E570D290E471606 /* SessionListView.swift */; };
-		A1C2F3E8B0A44C1D9F6E2D51 /* SessionDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F4D7C2A6E334B8BA5C1D7E2 /* SessionDetailView.swift */; };
+		AF2018663314F60612AA870C /* SessionDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C11C5968589418DC6FACC71 /* SessionDetailView.swift */; };
 		B390A2D7837E00F1BD0A3A02 /* ServerConfigView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77C3F696FB3AC44F63289153 /* ServerConfigView.swift */; };
 		D5D0F8E9076FE3804A1F70C0 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEBA8DDBA3366DAD90F90D12 /* RootView.swift */; };
+		ED3E575315F1B1B47026D137 /* PromptInputBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = E41A5697DA6DB07D3073297A /* PromptInputBar.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,8 +22,9 @@
 		5657E44D08D4FCB637EC7993 /* ACPAgentKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ACPAgentKit; path = ../ACPAgentKit; sourceTree = SOURCE_ROOT; };
 		77C3F696FB3AC44F63289153 /* ServerConfigView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfigView.swift; sourceTree = "<group>"; };
 		8BAA10F70E570D290E471606 /* SessionListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionListView.swift; sourceTree = "<group>"; };
-		9F4D7C2A6E334B8BA5C1D7E2 /* SessionDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailView.swift; sourceTree = "<group>"; };
+		9C11C5968589418DC6FACC71 /* SessionDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailView.swift; sourceTree = "<group>"; };
 		DEBA8DDBA3366DAD90F90D12 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		E41A5697DA6DB07D3073297A /* PromptInputBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptInputBar.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -58,9 +60,10 @@
 			isa = PBXGroup;
 			children = (
 				0DBE48C15D7460E71C2CCFFE /* ACPAgentApp.swift */,
+				E41A5697DA6DB07D3073297A /* PromptInputBar.swift */,
 				DEBA8DDBA3366DAD90F90D12 /* RootView.swift */,
 				77C3F696FB3AC44F63289153 /* ServerConfigView.swift */,
-				9F4D7C2A6E334B8BA5C1D7E2 /* SessionDetailView.swift */,
+				9C11C5968589418DC6FACC71 /* SessionDetailView.swift */,
 				8BAA10F70E570D290E471606 /* SessionListView.swift */,
 			);
 			path = ACPAgent;
@@ -139,9 +142,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				3338D730C0C3C7A4F4EB9746 /* ACPAgentApp.swift in Sources */,
+				ED3E575315F1B1B47026D137 /* PromptInputBar.swift in Sources */,
 				D5D0F8E9076FE3804A1F70C0 /* RootView.swift in Sources */,
 				B390A2D7837E00F1BD0A3A02 /* ServerConfigView.swift in Sources */,
-				A1C2F3E8B0A44C1D9F6E2D51 /* SessionDetailView.swift in Sources */,
+				AF2018663314F60612AA870C /* SessionDetailView.swift in Sources */,
 				83DA9DAAA34994226987003F /* SessionListView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

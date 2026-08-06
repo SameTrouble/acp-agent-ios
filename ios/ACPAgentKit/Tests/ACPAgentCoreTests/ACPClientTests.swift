@@ -99,6 +99,48 @@ import Testing
         #expect(beta?.pendingCount == 0)
     }
 
+    @Test func searchFilesQueriesCompanionAndReturnsRelativePaths() async throws {
+        let transport = MockWebSocketTransport()
+        let store = InMemoryTokenStore()
+        let endpoint = ServerEndpoint(host: "localhost", port: 8787)
+
+        transport.responders["auth"] = { id, _ in
+            successResponse(id: id, resultJSON: #"{"ok":true}"#)
+        }
+        transport.responders["files.search"] = { id, _ in
+            let filesJSON = [
+                #"{"path":"ios/App/ACPAgent/SessionDetailView.swift","score":950}"#,
+                #"{"path":"ios/App/ACPAgent/SessionListView.swift","score":900}"#,
+            ].joined(separator: ",")
+            return successResponse(id: id, resultJSON: #"{"files":[\#(filesJSON)]}"#)
+        }
+
+        let client = ACPClient(transport: transport, tokenStore: store)
+        _ = await client.connect(endpoint: endpoint, token: "tok")
+
+        let results = try await client.searchFiles(sessionId: "s1", query: "session")
+
+        #expect(results.count == 2)
+        #expect(results[0].path == "ios/App/ACPAgent/SessionDetailView.swift")
+        #expect(results[0].score == 950)
+        #expect(results[1].path == "ios/App/ACPAgent/SessionListView.swift")
+        #expect(results[1].score == 900)
+
+        let searchParams = transport.sentRequests()
+            .first { $0.method == "files.search" }?.params
+        #expect(searchParams?["sessionId"]?.value.base as? String == "s1")
+        #expect(searchParams?["query"]?.value.base as? String == "session")
+        #expect(searchParams?["limit"]?.value.base as? Int == 20)
+    }
+
+    @Test func searchFilesWhenDisconnectedThrowsNotConnected() async {
+        let client = ACPClient(transport: MockWebSocketTransport(), tokenStore: InMemoryTokenStore())
+
+        await #expect(throws: ConnectionError.notConnected) {
+            try await client.searchFiles(sessionId: "s1", query: "x")
+        }
+    }
+
     @Test func signOutClearsTokenAndDisconnects() async {
         let transport = MockWebSocketTransport()
         let store = InMemoryTokenStore(
