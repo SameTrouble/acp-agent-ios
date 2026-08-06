@@ -11,6 +11,7 @@ public final class ACPClient: ObservableObject {
 
     @Published public private(set) var connectionState: ConnectionState = .disconnected
     @Published public private(set) var sessions: [SessionInfo] = []
+    @Published public private(set) var conversations: [String: SessionConversation] = [:]
 
     private let rpc: JsonRpcClient
     private let transport: any WebSocketTransport
@@ -33,6 +34,12 @@ public final class ACPClient: ObservableObject {
         self.rpc.onNotificationHandler = { [weak self] notification in
             Task { @MainActor in self?.handleNotification(notification) }
         }
+    }
+
+    /// Read-only access to a session's conversation state. A new, empty one is
+    /// vended on first access so the view can subscribe immediately.
+    public func conversation(for sessionId: String) -> SessionConversation {
+        conversations[sessionId] ?? SessionConversation()
     }
 
     // MARK: - Connection lifecycle
@@ -90,6 +97,8 @@ public final class ACPClient: ObservableObject {
         _ = await connect(endpoint: endpoint, token: token)
     }
 
+    /// Drops the socket but keeps transcripts, so a reconnect can resume each
+    /// session from its last cursor instead of losing the screen.
     public func disconnect() async {
         await rpc.disconnect()
         connectionState = .disconnected
@@ -104,6 +113,7 @@ public final class ACPClient: ObservableObject {
         self.token = nil
         self.endpoint = nil
         await disconnect()
+        conversations = [:]
     }
 
     // MARK: - Session list
@@ -117,6 +127,110 @@ public final class ACPClient: ObservableObject {
         let list = try result.decode(SessionListResponse.self)
         sessions = list.sessions
         return list.sessions
+    }
+
+    // MARK: - Session conversation
+
+    /// Resumes a session, replaying any buffered events the client has missed
+    /// since its last known cursor. The resulting transcript and cursor are
+    /// stored in `conversations[sessionId]`.
+    @discardableResult
+    public func resumeSession(id sessionId: String) async throws -> SessionResumeResponse {
+        guard connectionState == .connected else {
+            throw ConnectionError.notConnected
+        }
+
+        var params: [String: AnyCodable] = ["sessionId": AnyCodable(sessionId)]
+        if let cursor = conversation(for: sessionId).cursor {
+            params["cursor"] = AnyCodable(cursor)
+        }
+
+        mutateConversation(sessionId) { $0.isResuming = true }
+        defer { mutateConversation(sessionId) { $0.isResuming = false } }
+
+        let result = try await rpc.request("session.resume", params: params)
+        let response = try result.decode(SessionResumeResponse.self)
+
+        mutateConversation(sessionId) { conv in
+            conv.recovery = response.recovery
+            conv.recoveryReason = response.reason
+
+            for event in response.events {
+                guard let update = event.params else { continue }
+                conv.apply(update.update, cursor: event.cursor)
+            }
+            if let cursor = response.cursor {
+                conv.advanceCursor(to: cursor)
+            }
+        }
+
+        return response
+    }
+
+    /// Sends a text prompt to the session. The message is optimistically
+    /// inserted into the transcript as a local user bubble while the request is
+    /// in flight.
+    @discardableResult
+    public func sendPrompt(sessionId: String, text: String) async throws -> String? {
+        guard connectionState == .connected else {
+            throw ConnectionError.notConnected
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw ConnectionError.rpcError(code: -32602, message: "Empty prompt")
+        }
+
+        mutateConversation(sessionId) { conv in
+            conv.isSending = true
+            conv.errorMessage = nil
+            conv.transcript.appendLocalUserMessage(trimmed)
+        }
+        defer {
+            mutateConversation(sessionId) { conv in
+                conv.isSending = false
+                conv.transcript.markIdle()
+            }
+        }
+
+        let block: [String: AnyCodable] = [
+            "type": AnyCodable("text"),
+            "text": AnyCodable(trimmed),
+        ]
+        let params: [String: AnyCodable] = [
+            "sessionId": AnyCodable(sessionId),
+            "prompt": AnyCodable([AnyCodable(block)]),
+        ]
+
+        do {
+            let result = try await rpc.request("session/prompt", params: params)
+            let response = try result.decode(PromptResponse.self)
+            return response.stopReason
+        } catch let error as ConnectionError {
+            mutateConversation(sessionId) { conv in
+                conv.errorMessage = error.localizedDescription
+            }
+            throw error
+        }
+    }
+
+    /// Issues a `session/cancel` notification to stop the current generation.
+    /// Safe to call repeatedly; a no-op when nothing is in flight.
+    public func cancelSession(id sessionId: String) async throws {
+        guard connectionState == .connected else {
+            throw ConnectionError.notConnected
+        }
+        let params: [String: AnyCodable] = ["sessionId": AnyCodable(sessionId)]
+        try await rpc.notify("session/cancel", params: params)
+        mutateConversation(sessionId) { conv in
+            conv.transcript.markIdle()
+            conv.isSending = false
+        }
+    }
+
+    private func mutateConversation(_ sessionId: String, _ update: (inout SessionConversation) -> Void) {
+        var conv = conversations[sessionId] ?? SessionConversation()
+        update(&conv)
+        conversations[sessionId] = conv
     }
 
     // MARK: - Persistence helpers
@@ -135,10 +249,19 @@ public final class ACPClient: ObservableObject {
     // MARK: - Notifications
 
     private func handleNotification(_ notification: JsonRpcNotification) {
-        if notification.method == "session/update" {
-            Task {
-                _ = try? await self.refreshSessions()
+        guard notification.method == "session/update" else { return }
+
+        if let params = notification.params,
+           let update = try? AnyCodable(params).decode(SessionUpdateNotification.self) {
+            mutateConversation(update.sessionId) { conv in
+                conv.apply(update.update, cursor: notification.cursor)
             }
+        }
+
+        // The session's `lastActiveAt` and status live on the list, so keep it
+        // in step with the stream.
+        Task {
+            _ = try? await self.refreshSessions()
         }
     }
 }
