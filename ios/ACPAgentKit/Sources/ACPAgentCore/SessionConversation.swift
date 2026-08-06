@@ -6,27 +6,40 @@ public enum RecoveryMode: String, Codable, Equatable, Sendable {
     case liveOnly = "live-only"
 }
 
-/// One buffered `session/update` frame from a `session.resume` replay. The
-/// cursor sits alongside `method` and `params`, matching the live notification
-/// shape the companion broadcasts.
+/// One buffered frame from a `session.resume` replay. The cursor sits alongside
+/// `method` and `params`, matching the live notification shape the companion
+/// broadcasts. Agent→client request frames (`session/request_permission`) are
+/// buffered too, carrying their JSON-RPC `id` so a reconnecting client can
+/// still answer them.
 public struct BufferedSessionEvent: Decodable, Equatable, Sendable {
     public let method: String
     public let params: SessionUpdateNotification?
+    public let request: PermissionRequest?
     public let cursor: Int?
 
     enum CodingKeys: String, CodingKey {
-        case method, params, cursor
+        case method, params, cursor, id
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         method = try container.decode(String.self, forKey: .method)
         cursor = try container.decodeIfPresent(Int.self, forKey: .cursor)
-        // Anything other than session/update carries no transcript payload we
-        // know how to render, so it is dropped rather than failing the replay.
-        params = method == "session/update"
-            ? try? container.decodeIfPresent(SessionUpdateNotification.self, forKey: .params)
-            : nil
+        if method == "session/update" {
+            params = try? container.decodeIfPresent(SessionUpdateNotification.self, forKey: .params)
+            request = nil
+        } else if method == "session/request_permission",
+                  var decoded = try? container.decodeIfPresent(PermissionRequest.self, forKey: .params),
+                  let id = try? container.decodeIfPresent(JsonRpcId.self, forKey: .id) {
+            decoded.requestId = id
+            request = decoded
+            params = nil
+        } else {
+            // Anything else carries no transcript payload we know how to
+            // render, so it is dropped rather than failing the replay.
+            params = nil
+            request = nil
+        }
     }
 }
 
@@ -81,6 +94,26 @@ public struct SessionConversation: Equatable, Sendable {
         guard shouldApply(cursor: incoming) else { return }
         transcript.apply(update)
         advanceCursor(to: incoming)
+    }
+
+    /// Applies a replayed or live permission request. Request frames share the
+    /// session's cursor stream, so the same monotonic guard applies.
+    mutating func applyApprovalRequest(_ request: PermissionRequest, cursor incoming: Int?) {
+        guard shouldApply(cursor: incoming) else { return }
+        transcript.applyApprovalRequest(request)
+        advanceCursor(to: incoming)
+    }
+
+    /// Transitions the matching approval card to a terminal state.
+    @discardableResult
+    mutating func resolveApproval(requestId: JsonRpcId, state: PermissionState) -> Bool {
+        transcript.resolveApproval(requestId: requestId, state: state)
+    }
+
+    /// Resets the matching card back to pending (rollback of a failed send).
+    @discardableResult
+    mutating func revertApproval(requestId: JsonRpcId) -> Bool {
+        transcript.revertApproval(requestId: requestId)
     }
 
     /// Cursors are monotonic per session; a lower one is a stale duplicate and

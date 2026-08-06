@@ -8,9 +8,11 @@ import {
   ErrorCodes,
   isNotification,
   isRequest,
+  isResponse,
   makeError,
   makeResponse,
   RpcError,
+  type JsonRpcResponse,
 } from "./rpc";
 import { searchFiles } from "./file-search";
 import { expandPrompt } from "./prompt-expander";
@@ -42,6 +44,12 @@ export class CompanionServer {
   private agentInfo: InitializeResult;
   private sessions: SessionManager;
   private events: SessionEventBuffer;
+  /**
+   * Outstanding agent→client request ids awaiting a client response. The value
+   * is the request's session id (for the pending flag) or undefined for
+   * requests without one.
+   */
+  private agentRequests = new Map<number | string, string | undefined>();
 
   constructor(opts: CompanionServerOptions) {
     this.config = opts.config;
@@ -57,6 +65,22 @@ export class CompanionServer {
       const cursor = this.recordEvent(method, params);
       this.broadcast({
         jsonrpc: "2.0",
+        method,
+        ...(params !== undefined ? { params } : {}),
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+    });
+
+    // Agent→client requests (e.g. session/request_permission) are relayed to
+    // every client; the first response routed back wins (ADR-005).
+    this.acp.setRequestHandler(({ id, method, params }) => {
+      const sessionId = this.sessionIdFromParams(params);
+      if (sessionId) this.sessions.setPendingApproval(sessionId, true);
+      this.agentRequests.set(id, sessionId);
+      const cursor = this.recordAgentRequest(method, params, id);
+      this.broadcast({
+        jsonrpc: "2.0",
+        id,
         method,
         ...(params !== undefined ? { params } : {}),
         ...(cursor !== undefined ? { cursor } : {}),
@@ -115,6 +139,11 @@ export class CompanionServer {
       return;
     }
 
+    if (isResponse(msg)) {
+      this.handleClientResponse(ws, msg);
+      return;
+    }
+
     if (!isRequest(msg) && !isNotification(msg)) {
       this.send(ws, makeError(0, ErrorCodes.InvalidRequest, "expected a JSON-RPC request or notification"));
       return;
@@ -138,6 +167,27 @@ export class CompanionServer {
     }
 
     await this.forward(ws, msg);
+  }
+
+  /**
+   * Routes a client's reply to an agent→client request back to the agent. Only
+   * the first response for a given id is forwarded — a late response from a
+   * second device is dropped silently (no error, no duplicate execution).
+   */
+  private handleClientResponse(ws: ServerWebSocket<ClientState>, msg: JsonRpcResponse): void {
+    if (!this.isAuthenticated(ws)) {
+      this.send(ws, makeError(0, AppErrorCodes.Unauthorized, "not authenticated: send auth first"));
+      return;
+    }
+    if (!this.agentRequests.has(msg.id)) return;
+    const sessionId = this.agentRequests.get(msg.id);
+    this.agentRequests.delete(msg.id);
+    if (sessionId) this.sessions.setPendingApproval(sessionId, false);
+    if (msg.error) {
+      this.acp.respondError(msg.id, msg.error.code, msg.error.message);
+    } else {
+      this.acp.respond(msg.id, msg.result);
+    }
   }
 
   private handleAuth(ws: ServerWebSocket<ClientState>, id: string | number | undefined, params: unknown): void {
@@ -315,6 +365,20 @@ export class CompanionServer {
     const sessionId = this.sessionIdFromParams(params);
     if (!sessionId) return undefined;
     const cursor = this.events.record(sessionId, { method, params });
+    this.pruneEventBuffers();
+    return cursor;
+  }
+
+  /**
+   * Agent→client request frames are buffered like session/update events so a
+   * client that reconnects replays the pending approval card instead of losing
+   * it (and never getting to answer — the agent would hang).
+   */
+  private recordAgentRequest(method: string, params: unknown, id: number | string): number | undefined {
+    if (method !== "session/request_permission") return undefined;
+    const sessionId = this.sessionIdFromParams(params);
+    if (!sessionId) return undefined;
+    const cursor = this.events.record(sessionId, { method, params, id });
     this.pruneEventBuffers();
     return cursor;
   }

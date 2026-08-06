@@ -254,4 +254,151 @@ import Testing
         transcript.markIdle()
         #expect(!transcript.isGenerating)
     }
+
+    // MARK: - Permission approvals
+
+    private func makeRequest(requestId: Int = 0) -> PermissionRequest {
+        PermissionRequest(
+            sessionId: "s1",
+            toolCall: PermissionToolCall(
+                toolCallId: "call_\(requestId)",
+                title: "curl -s http://example.com",
+                kind: "execute",
+                locations: ["/etc/hosts"],
+                rawInput: ["command": AnyCodable("curl -s http://example.com")]
+            ),
+            options: [
+                PermissionOption(optionId: "once", kind: .allowOnce, name: "Allow once"),
+                PermissionOption(optionId: "always", kind: .allowAlways, name: "Always allow"),
+                PermissionOption(optionId: "reject", kind: .rejectOnce, name: "Reject"),
+            ]
+        )
+    }
+
+    @Test func approvalRequestAppendsPendingCard() {
+        var transcript = SessionTranscript()
+        var request = makeRequest(requestId: 3)
+        request.requestId = .number(3)
+
+        transcript.applyApprovalRequest(request)
+
+        #expect(transcript.approvalCards.count == 1)
+        let card = transcript.approvalCards[0]
+        #expect(card.id == "perm:3")
+        #expect(card.requestId == .number(3))
+        #expect(card.toolCall.title == "curl -s http://example.com")
+        #expect(card.toolCall.locations == ["/etc/hosts"])
+        #expect(card.options.count == 3)
+        #expect(card.state == .pending)
+        #expect(transcript.items.first == .approval(card))
+    }
+
+    @Test func duplicateApprovalRequestKeepsFirstCard() {
+        var transcript = SessionTranscript()
+        var request = makeRequest(requestId: 1)
+        request.requestId = .number(1)
+
+        transcript.applyApprovalRequest(request)
+        transcript.applyApprovalRequest(request)
+
+        #expect(transcript.approvalCards.count == 1)
+    }
+
+    @Test func approvalCardPausesTheSpinner() {
+        var transcript = SessionTranscript()
+        transcript.apply(.agentMessageChunk(.text("working")))
+        #expect(transcript.isGenerating)
+
+        var request = makeRequest(requestId: 1)
+        request.requestId = .number(1)
+        transcript.applyApprovalRequest(request)
+
+        // The agent is blocked on the user's choice, not streaming.
+        #expect(!transcript.isGenerating)
+    }
+
+    @Test func resolveApprovalTransitionsToApproved() {
+        var transcript = SessionTranscript()
+        var request = makeRequest(requestId: 2)
+        request.requestId = .number(2)
+        transcript.applyApprovalRequest(request)
+
+        let transitioned = transcript.resolveApproval(requestId: .number(2), state: .approved(optionId: "once"))
+
+        #expect(transitioned)
+        #expect(transcript.approvalCards[0].state == .approved(optionId: "once"))
+        #expect(transcript.approvalCards[0].state.isTerminal)
+    }
+
+    @Test func resolveApprovalTransitionsToRejected() {
+        var transcript = SessionTranscript()
+        var request = makeRequest(requestId: 2)
+        request.requestId = .number(2)
+        transcript.applyApprovalRequest(request)
+
+        let transitioned = transcript.resolveApproval(requestId: .number(2), state: .rejected)
+
+        #expect(transitioned)
+        #expect(transcript.approvalCards[0].state == .rejected)
+    }
+
+    @Test func resolveApprovalOnTerminalCardIsRefused() {
+        var transcript = SessionTranscript()
+        var request = makeRequest(requestId: 2)
+        request.requestId = .number(2)
+        transcript.applyApprovalRequest(request)
+        _ = transcript.resolveApproval(requestId: .number(2), state: .approved(optionId: "once"))
+
+        // A second answer (double-tap or another device) must not change state.
+        let second = transcript.resolveApproval(requestId: .number(2), state: .rejected)
+
+        #expect(!second)
+        #expect(transcript.approvalCards[0].state == .approved(optionId: "once"))
+    }
+
+    @Test func resolveApprovalForUnknownRequestIsRefused() {
+        var transcript = SessionTranscript()
+
+        let transitioned = transcript.resolveApproval(requestId: .number(99), state: .rejected)
+
+        #expect(!transitioned)
+        #expect(transcript.approvalCards.isEmpty)
+    }
+
+    @Test func revertApprovalRollsTerminalCardBackToPending() {
+        var transcript = SessionTranscript()
+        var request = makeRequest(requestId: 2)
+        request.requestId = .number(2)
+        transcript.applyApprovalRequest(request)
+        _ = transcript.resolveApproval(requestId: .number(2), state: .approved(optionId: "once"))
+
+        let reverted = transcript.revertApproval(requestId: .number(2))
+
+        #expect(reverted)
+        #expect(transcript.approvalCards[0].state == .pending)
+    }
+
+    @Test func revertApprovalOnPendingCardIsRefused() {
+        var transcript = SessionTranscript()
+        var request = makeRequest(requestId: 2)
+        request.requestId = .number(2)
+        transcript.applyApprovalRequest(request)
+
+        let reverted = transcript.revertApproval(requestId: .number(2))
+
+        #expect(!reverted)
+        #expect(transcript.approvalCards[0].state == .pending)
+    }
+
+    @Test func markIdleDoesNotClearApprovalCards() {
+        var transcript = SessionTranscript()
+        var request = makeRequest(requestId: 1)
+        request.requestId = .number(1)
+        transcript.applyApprovalRequest(request)
+
+        transcript.markIdle()
+
+        #expect(transcript.approvalCards.count == 1)
+        #expect(transcript.approvalCards[0].state == .pending)
+    }
 }

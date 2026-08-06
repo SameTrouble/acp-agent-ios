@@ -74,6 +74,37 @@ import Testing
         #expect(delta.status == .pending)
     }
 
+    @Test func decodesInProgressToolCallUpdate() throws {
+        // ADR-005: opencode emits `in_progress` — without this case an
+        // in-flight tool would decode to `.pending` and never complete.
+        let notification = try decode(#"""
+        {"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"in_progress"}}
+        """#)
+
+        guard case .toolCallUpdate(let delta) = notification.update else {
+            Issue.record("Expected toolCallUpdate")
+            return
+        }
+        #expect(delta.status == .inProgress)
+        #expect(delta.status?.displayName == "In Progress")
+        #expect(delta.status?.isTerminal == false)
+    }
+
+    @Test func decodesFailedToolCallUpdate() throws {
+        // ADR-005: a rejected permission fails the gated tool with `failed`.
+        let notification = try decode(#"""
+        {"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"failed"}}
+        """#)
+
+        guard case .toolCallUpdate(let delta) = notification.update else {
+            Issue.record("Expected toolCallUpdate")
+            return
+        }
+        #expect(delta.status == .failed)
+        #expect(delta.status?.displayName == "Failed")
+        #expect(delta.status?.isTerminal == true)
+    }
+
     @Test func decodesToolCallContentAsText() throws {
         let notification = try decode(#"""
         {"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","content":[{"type":"content","content":{"type":"text","text":"line one"}},{"type":"content","content":{"type":"text","text":"line two"}}]}}

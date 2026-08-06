@@ -207,12 +207,20 @@ public final class JsonRpcClient: @unchecked Sendable {
     private let decoder = JSONDecoder()
     private let state = JsonRpcState()
     private var onNotification: ((JsonRpcNotification) -> Void)?
+    private var onRequest: ((JsonRpcRequest) -> Void)?
     private let notificationQueue = DispatchQueue(label: "com.acp-agent.jsonrpc.notification")
     private let connectTimeout: TimeInterval
 
     public var onNotificationHandler: ((JsonRpcNotification) -> Void)? {
         get { notificationQueue.sync { onNotification } }
         set { notificationQueue.sync { onNotification = newValue } }
+    }
+
+    /// Delivers agent→client JSON-RPC requests (e.g. `session/request_permission`),
+    /// which arrive with an `id` the client must eventually answer via `respond`.
+    public var onRequestHandler: ((JsonRpcRequest) -> Void)? {
+        get { notificationQueue.sync { onRequest } }
+        set { notificationQueue.sync { onRequest = newValue } }
     }
 
     public init(transport: any WebSocketTransport, connectTimeout: TimeInterval = 10) {
@@ -287,6 +295,17 @@ public final class JsonRpcClient: @unchecked Sendable {
         try await transport.send(text)
     }
 
+    /// Replies to an agent→client request, echoing its `id` (ADR-005 response
+    /// expectations for `session/request_permission`).
+    public func respond(id: JsonRpcId, result: AnyCodable) async throws {
+        let response = JsonRpcResponse(id: id, result: result)
+        let data = try encoder.encode(response)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw ConnectionError.connectionFailed("Failed to encode response")
+        }
+        try await transport.send(text)
+    }
+
     private func handleMessage(_ text: String) {
         guard let data = text.data(using: .utf8) else { return }
         do {
@@ -298,8 +317,10 @@ public final class JsonRpcClient: @unchecked Sendable {
                 notificationQueue.async { [weak self] in
                     self?.onNotification?(notification)
                 }
-            case .request:
-                break
+            case .request(let request):
+                notificationQueue.async { [weak self] in
+                    self?.onRequest?(request)
+                }
             }
         } catch {
             print("Failed to decode JSON-RPC message: \(error)")

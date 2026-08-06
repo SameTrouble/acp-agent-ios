@@ -26,6 +26,10 @@ struct SessionDetailView: View {
                                     MessageBubble(message: message)
                                 case .toolCall(let card):
                                     ToolCallCardView(call: card)
+                                case .approval(let card):
+                                    ApprovalCardView(card: card) { option in
+                                        respondToApproval(card: card, option: option)
+                                    }
                                 }
                             }
                             if conversation.isSending || conversation.transcript.isGenerating {
@@ -123,6 +127,14 @@ struct SessionDetailView: View {
     private func cancel() {
         Task {
             try? await client.cancelSession(id: sessionId)
+        }
+    }
+
+    private func respondToApproval(card: PermissionCard, option: PermissionOption) {
+        Task {
+            // The store optimistically turns the card terminal before sending;
+            // on failure it rolls back so the user can try again.
+            try? await client.respondToPermission(sessionId: sessionId, requestId: card.requestId, option: option)
         }
     }
 
@@ -292,9 +304,9 @@ private struct ToolCallCardView: View {
     private var statusColor: Color {
         switch call.status {
         case .pending: return .orange
-        case .running: return .blue
+        case .running, .inProgress: return .blue
         case .completed: return .green
-        case .error: return .red
+        case .error, .failed: return .red
         }
     }
 
@@ -317,8 +329,149 @@ private struct ToolCallCardView: View {
         switch call.status {
         case .pending: return "clock"
         case .running: return "play.circle"
+        case .inProgress: return "hourglass"
         case .completed: return "checkmark.circle.fill"
-        case .error: return "xmark.circle.fill"
+        case .error, .failed: return "xmark.circle.fill"
+        }
+    }
+}
+
+// MARK: - Approval card
+
+/// The structured permission card: one button per wire-provided option, so the
+/// UI faithfully renders the agent's choices (ADR-005: allow once / always /
+/// reject). Once the user answers, the card turns terminal and the buttons are
+/// replaced by the outcome — it can never be answered twice.
+private struct ApprovalCardView: View {
+    let card: PermissionCard
+    let onSelect: (PermissionOption) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "person.badge.key")
+                    .foregroundStyle(accentColor)
+                Text("Permission Request")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if card.state.isTerminal {
+                    terminalBadge
+                }
+            }
+
+            Text(card.toolCall.title ?? card.toolCall.toolCallId)
+                .font(.callout.monospaced())
+                .textSelection(.enabled)
+                .lineLimit(3)
+
+            if !card.toolCall.locations.isEmpty {
+                ForEach(card.toolCall.locations, id: \.self) { path in
+                    Text(path)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            if !card.toolCall.summaryLines.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(card.toolCall.summaryLines, id: \.self) { line in
+                        Text(line)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+
+            if !card.toolCall.content.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(card.toolCall.content, id: \.self) { block in
+                        Text(block)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+
+            if card.state == .pending {
+                optionsRow
+            } else {
+                outcomeLine
+            }
+        }
+        .padding(12)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(accentColor.opacity(0.3), lineWidth: 1)
+        )
+    }
+
+    private var accentColor: Color {
+        if isRejected { return .red }
+        return card.state.isTerminal ? .green : .orange
+    }
+
+    private var isRejected: Bool {
+        card.state == .rejected
+    }
+
+    /// Buttons are rendered from the wire options, not hardcoded (ADR-005).
+    private var optionsRow: some View {
+        HStack(spacing: 8) {
+            ForEach(card.options) { option in
+                Button {
+                    onSelect(option)
+                } label: {
+                    Text(option.name)
+                        .font(.subheadline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(option.isAllow ? .accentColor : .red)
+                .accessibilityLabel(option.name)
+            }
+        }
+    }
+
+    private var terminalBadge: some View {
+        HStack(spacing: 4) {
+            Image(systemName: isRejected ? "xmark.circle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(accentColor)
+            Text(terminalTitle)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var outcomeLine: some View {
+        HStack(spacing: 6) {
+            Image(systemName: isRejected ? "xmark.circle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(accentColor)
+            Text(outcomeDescription)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(accentColor)
+        }
+    }
+
+    private var terminalTitle: String {
+        isRejected ? "Rejected" : "Approved"
+    }
+
+    private var outcomeDescription: String {
+        switch card.state {
+        case .pending:
+            return ""
+        case .approved(let optionId):
+            let name = card.options.first { $0.optionId == optionId }?.name ?? "Approved"
+            return "Approved — \(name)"
+        case .rejected:
+            return "Rejected"
         }
     }
 }

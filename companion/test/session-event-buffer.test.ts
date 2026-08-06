@@ -130,6 +130,26 @@ describe("SessionEventBuffer", () => {
     expect(first.cursor).toBe(cursor);
   });
 
+  test("request frames keep their JSON-RPC id across record and replay", () => {
+    const buf = new SessionEventBuffer(100);
+    const cursor = buf.record("sess_x", {
+      method: "session/request_permission",
+      params: { sessionId: "sess_x", toolCall: { toolCallId: "call_1" } },
+      id: 7,
+    });
+    const plain = buf.record("sess_x", { method: "session/update", params: { sessionId: "sess_x", update: { text: "a" } } });
+
+    const result = buf.replay("sess_x", -1);
+    expect(result).not.toBeNull();
+    const [request, update] = result!.events;
+    expect(request!.method).toBe("session/request_permission");
+    expect(request!.id).toBe(7);
+    expect(request!.cursor).toBe(cursor);
+    expect(update!.method).toBe("session/update");
+    expect(update!.id).toBeUndefined();
+    expect(update!.cursor).toBe(plain);
+  });
+
   test("buffer stays bounded regardless of how many events a session emits", () => {
     const buf = new SessionEventBuffer(10);
     for (let i = 0; i < 1000; i++) {

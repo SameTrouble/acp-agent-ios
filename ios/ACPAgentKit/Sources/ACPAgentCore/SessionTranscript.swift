@@ -49,11 +49,13 @@ public struct ToolCallCard: Identifiable, Equatable, Sendable {
 public enum TranscriptItem: Identifiable, Equatable, Sendable {
     case message(TranscriptMessage)
     case toolCall(ToolCallCard)
+    case approval(PermissionCard)
 
     public var id: String {
         switch self {
         case .message(let message): return "msg:\(message.id)"
         case .toolCall(let card): return "tool:\(card.id)"
+        case .approval(let card): return card.id
         }
     }
 }
@@ -71,6 +73,8 @@ public struct SessionTranscript: Equatable, Sendable {
     /// Index of a locally-echoed user bubble still waiting for the server to
     /// echo the same text back as `user_message_chunk`.
     private var pendingLocalUserIndex: Int?
+    /// One approval card per permission request, keyed by the JSON-RPC id.
+    private var approvalIndexById: [String: Int] = [:]
 
     public init() {}
 
@@ -80,6 +84,10 @@ public struct SessionTranscript: Equatable, Sendable {
 
     public var toolCalls: [ToolCallCard] {
         items.compactMap { if case .toolCall(let card) = $0 { return card } else { return nil } }
+    }
+
+    public var approvalCards: [PermissionCard] {
+        items.compactMap { if case .approval(let card) = $0 { return card } else { return nil } }
     }
 
     public mutating func apply(_ update: SessionUpdate) {
@@ -109,6 +117,44 @@ public struct SessionTranscript: Equatable, Sendable {
         items.append(.message(TranscriptMessage(id: "m\(nextMessageIndex)", role: .user, text: text)))
         pendingLocalUserIndex = items.count - 1
         isGenerating = true
+    }
+
+    /// Adds a pending approval card for an agent permission request. A
+    /// duplicate request id (re-broadcast or replay) keeps the first card.
+    public mutating func applyApprovalRequest(_ request: PermissionRequest) {
+        let key = request.requestId.wireKey
+        guard approvalIndexById[key] == nil else { return }
+        closeOpenMessage()
+        // The agent is blocked waiting for the user's choice, not streaming.
+        isGenerating = false
+        approvalIndexById[key] = items.count
+        items.append(.approval(PermissionCard(request: request)))
+    }
+
+    /// Transitions a pending card to a terminal state. Returns false when the
+    /// request is unknown or already resolved — the caller must then send
+    /// nothing (a second device may have answered first).
+    @discardableResult
+    public mutating func resolveApproval(requestId: JsonRpcId, state: PermissionState) -> Bool {
+        guard let index = approvalIndexById[requestId.wireKey],
+              case .approval(var card) = items[index],
+              card.state == .pending else { return false }
+        card.state = state
+        items[index] = .approval(card)
+        return true
+    }
+
+    /// Resets a terminal card back to pending. Used by the store to roll back
+    /// an optimistic resolution whose receipt failed to send, so the user can
+    /// try again.
+    @discardableResult
+    public mutating func revertApproval(requestId: JsonRpcId) -> Bool {
+        guard let index = approvalIndexById[requestId.wireKey],
+              case .approval(var card) = items[index],
+              card.state.isTerminal else { return false }
+        card.state = .pending
+        items[index] = .approval(card)
+        return true
     }
 
     public mutating func markGenerating() {

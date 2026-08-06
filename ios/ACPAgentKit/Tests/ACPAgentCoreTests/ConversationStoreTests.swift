@@ -175,4 +175,154 @@ import Testing
         #expect(store.conversation(for: "s1").transcript.messages.isEmpty)
         #expect(store.conversation(for: "s1").cursor == nil)
     }
+
+    // MARK: - permissions
+
+    private func makePermissionRequest(requestId: JsonRpcId) -> PermissionRequest {
+        var request = PermissionRequest(
+            sessionId: "s1",
+            toolCall: PermissionToolCall(
+                toolCallId: "call_1",
+                title: "curl -s http://example.com",
+                kind: "execute",
+                locations: ["/etc/hosts"],
+                rawInput: ["command": AnyCodable("curl -s http://example.com")]
+            ),
+            options: [
+                PermissionOption(optionId: "once", kind: .allowOnce, name: "Allow once"),
+                PermissionOption(optionId: "always", kind: .allowAlways, name: "Always allow"),
+                PermissionOption(optionId: "reject", kind: .rejectOnce, name: "Reject"),
+            ]
+        )
+        request.requestId = requestId
+        return request
+    }
+
+    @Test func applyPermissionRequestAddsPendingCard() {
+        let store = makeStore(MockWebSocketTransport())
+
+        store.applyPermissionRequest(makePermissionRequest(requestId: .number(0)))
+
+        let card = store.conversation(for: "s1").transcript.approvalCards.first
+        #expect(card?.state == .pending)
+        #expect(card?.requestId == .number(0))
+        #expect(card?.toolCall.title == "curl -s http://example.com")
+        #expect(card?.options.count == 3)
+    }
+
+    @Test func respondToPermissionSendsADR005ResultAndTurnsCardTerminal() async throws {
+        let transport = MockWebSocketTransport()
+        let store = makeStore(transport)
+        store.applyPermissionRequest(makePermissionRequest(requestId: .number(0)))
+
+        try await store.respondToPermission(
+            sessionId: "s1",
+            requestId: .number(0),
+            option: PermissionOption(optionId: "once", kind: .allowOnce, name: "Allow once")
+        )
+
+        let responses = transport.sentResponses()
+        #expect(responses.count == 1)
+        #expect(responses[0].id == .number(0))
+        let outcome = responses[0].result?.value.base as? [String: AnyCodable]
+        let inner = outcome?["outcome"]?.value.base as? [String: AnyCodable]
+        #expect(inner?["outcome"]?.value.base as? String == "selected")
+        #expect(inner?["optionId"]?.value.base as? String == "once")
+
+        let card = store.conversation(for: "s1").transcript.approvalCards.first
+        #expect(card?.state == .approved(optionId: "once"))
+    }
+
+    @Test func rejectPermissionSendsRejectedOutcome() async throws {
+        let transport = MockWebSocketTransport()
+        let store = makeStore(transport)
+        store.applyPermissionRequest(makePermissionRequest(requestId: .number(5)))
+
+        try await store.respondToPermission(
+            sessionId: "s1",
+            requestId: .number(5),
+            option: PermissionOption(optionId: "reject", kind: .rejectOnce, name: "Reject")
+        )
+
+        let responses = transport.sentResponses()
+        #expect(responses.count == 1)
+        #expect(responses[0].id == .number(5))
+        let outcome = responses[0].result?.value.base as? [String: AnyCodable]
+        let inner = outcome?["outcome"]?.value.base as? [String: AnyCodable]
+        #expect(inner?["outcome"]?.value.base as? String == "rejected")
+        #expect(inner?["optionId"] == nil)
+
+        #expect(store.conversation(for: "s1").transcript.approvalCards.first?.state == .rejected)
+    }
+
+    @Test func secondResponseToSameRequestIsASilentNoOp() async throws {
+        let transport = MockWebSocketTransport()
+        let store = makeStore(transport)
+        store.applyPermissionRequest(makePermissionRequest(requestId: .number(1)))
+
+        try await store.respondToPermission(
+            sessionId: "s1",
+            requestId: .number(1),
+            option: PermissionOption(optionId: "once", kind: .allowOnce, name: "Allow once")
+        )
+        try await store.respondToPermission(
+            sessionId: "s1",
+            requestId: .number(1),
+            option: PermissionOption(optionId: "always", kind: .allowAlways, name: "Always allow")
+        )
+
+        // One receipt only; the card keeps the first choice.
+        #expect(transport.sentResponses().count == 1)
+        #expect(store.conversation(for: "s1").transcript.approvalCards.first?.state == .approved(optionId: "once"))
+    }
+
+    @Test func respondToUnknownRequestSendsNothing() async throws {
+        let transport = MockWebSocketTransport()
+        let store = makeStore(transport)
+
+        try await store.respondToPermission(
+            sessionId: "s1",
+            requestId: .number(42),
+            option: PermissionOption(optionId: "once", kind: .allowOnce, name: "Allow once")
+        )
+
+        #expect(transport.sentResponses().isEmpty)
+    }
+
+    @Test func respondToPermissionWhenDisconnectedThrows() async {
+        let store = makeStore(MockWebSocketTransport(), isConnected: false)
+        store.applyPermissionRequest(makePermissionRequest(requestId: .number(0)))
+
+        await #expect(throws: ConnectionError.notConnected) {
+            try await store.respondToPermission(
+                sessionId: "s1",
+                requestId: .number(0),
+                option: PermissionOption(optionId: "once", kind: .allowOnce, name: "Allow once")
+            )
+        }
+
+        // Nothing was sent and the card is still pending.
+        #expect(store.conversation(for: "s1").transcript.approvalCards.first?.state == .pending)
+    }
+
+    @Test func failedSendRollsTheCardBackToPending() async {
+        let transport = MockWebSocketTransport()
+        transport.sendError = ConnectionError.notConnected
+        let store = makeStore(transport)
+        store.applyPermissionRequest(makePermissionRequest(requestId: .number(0)))
+
+        do {
+            try await store.respondToPermission(
+                sessionId: "s1",
+                requestId: .number(0),
+                option: PermissionOption(optionId: "once", kind: .allowOnce, name: "Allow once")
+            )
+            Issue.record("Expected error")
+        } catch {
+            // expected
+        }
+
+        // The user can retry.
+        #expect(store.conversation(for: "s1").transcript.approvalCards.first?.state == .pending)
+    }
 }

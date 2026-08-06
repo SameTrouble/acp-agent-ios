@@ -3,12 +3,15 @@ import { RingBuffer } from "./ring-buffer";
 export interface BufferedEvent {
   method: string;
   params: unknown;
+  /** For agent→client request frames (e.g. session/request_permission): the JSON-RPC id to reply to. */
+  id?: number | string;
   cursor: number;
 }
 
 interface BufferEntry {
   method: string;
   params: unknown;
+  id?: number | string;
 }
 
 export class SessionEventBuffer {
@@ -19,13 +22,13 @@ export class SessionEventBuffer {
     this.capacity = capacity;
   }
 
-  record(sessionId: string, event: { method: string; params: unknown }): number {
+  record(sessionId: string, event: { method: string; params: unknown; id?: number | string }): number {
     let buf = this.buffers.get(sessionId);
     if (!buf) {
       buf = new RingBuffer<BufferEntry>(this.capacity);
       this.buffers.set(sessionId, buf);
     }
-    return buf.push({ method: event.method, params: event.params });
+    return buf.push({ method: event.method, params: event.params, ...(event.id !== undefined ? { id: event.id } : {}) });
   }
 
   replay(sessionId: string, cursor: number): { events: BufferedEvent[]; latestCursor: number } | null {
@@ -38,6 +41,7 @@ export class SessionEventBuffer {
     const events: BufferedEvent[] = result.items.map((item, i) => ({
       method: item.method,
       params: item.params,
+      ...(item.id !== undefined ? { id: item.id } : {}),
       cursor: result.from + i,
     }));
 

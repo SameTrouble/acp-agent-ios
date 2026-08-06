@@ -444,3 +444,140 @@ describe("session.end", () => {
     ws.close();
   });
 });
+
+describe("agent request relay (permission)", () => {
+  interface Authed {
+    ws: WebSocket;
+    q: QueuedSocket;
+  }
+
+  const authenticate = async (): Promise<Authed> => {
+    const ws = connect();
+    await waitOpen(ws);
+    const q = makeQueue(ws);
+    send(ws, { jsonrpc: "2.0", id: 1, method: "auth", params: { token: "good-token" } });
+    await nextMessage(q);
+    return { ws, q };
+  };
+
+  interface PermissionRequestFrame {
+    id: number | string;
+    method: string;
+    params: {
+      sessionId: string;
+      toolCall: { toolCallId: string; title: string };
+      options: Array<{ optionId: string; kind: string; name: string }>;
+    };
+  }
+
+  const startPermissionPrompt = async (ws: WebSocket, q: QueuedSocket) => {
+    send(ws, { jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: "/proj/perm" } });
+    const newMsg = (await nextMessage(q)) as { result?: { sessionId: string } };
+    const sessionId = newMsg.result!.sessionId;
+    send(ws, {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "text", text: "ask curl -s http://example.com" }] },
+    });
+    return sessionId;
+  };
+
+  test("request_permission is broadcast and the session is marked pending", async () => {
+    const { ws: wsA, q: qA } = await authenticate();
+    const { ws: wsB, q: qB } = await authenticate();
+    const sessionId = await startPermissionPrompt(wsA, qA);
+
+    const [aMsgs, bMsgs] = await Promise.all([
+      collectMessages(qA, 2),
+      collectMessages(qB, 2),
+    ]);
+    for (const msgs of [aMsgs, bMsgs]) {
+      const toolUpdate = msgs[0] as { method: string; params: { sessionId: string } };
+      expect(toolUpdate.method).toBe("session/update");
+      expect(toolUpdate.params.sessionId).toBe(sessionId);
+
+      const request = msgs[1] as PermissionRequestFrame;
+      expect(request.method).toBe("session/request_permission");
+      expect(typeof request.id).toBe("number");
+      expect(request.params.sessionId).toBe(sessionId);
+      expect(request.params.toolCall.title).toBe("curl -s http://example.com");
+      expect(request.params.options.map((o) => o.kind)).toEqual(["allow_once", "allow_always", "reject_once"]);
+    }
+
+    send(wsA, { jsonrpc: "2.0", id: 4, method: "session.list" });
+    const listMsg = (await nextMessage(qA)) as { result?: { sessions: Array<{ id: string; hasPendingApproval: boolean }> } };
+    const found = listMsg.result!.sessions.find((s) => s.id === sessionId);
+    expect(found?.hasPendingApproval).toBe(true);
+
+    wsA.close();
+    wsB.close();
+  }, 10000);
+
+  test("first response reaches the agent and clears the pending flag; late responses are dropped", async () => {
+    const { ws: wsA, q: qA } = await authenticate();
+    const { ws: wsB, q: qB } = await authenticate();
+    const sessionId = await startPermissionPrompt(wsA, qA);
+
+    const [aMsgs] = await Promise.all([
+      collectMessages(qA, 2),
+      collectMessages(qB, 2),
+    ]);
+    const request = aMsgs[1] as PermissionRequestFrame;
+    const requestId = request.id;
+
+    // Client A answers first: allow_once → the tool executes and the prompt completes.
+    send(wsA, {
+      jsonrpc: "2.0",
+      id: requestId,
+      result: { outcome: { outcome: "selected", optionId: "once" } },
+    });
+    const followUps = await collectMessages(qA, 2);
+    const toolUpdate = followUps[0] as { method: string; params: { update: { status: string } } };
+    const promptResponse = followUps[1] as { result?: { stopReason: string }; id: number };
+    expect(toolUpdate.method).toBe("session/update");
+    expect(toolUpdate.params.update.status).toBe("completed");
+    expect(promptResponse.result?.stopReason).toBe("end_turn");
+
+    send(wsA, { jsonrpc: "2.0", id: 5, method: "session.list" });
+    const listMsg = (await nextMessage(qA)) as { result?: { sessions: Array<{ id: string; hasPendingApproval: boolean }> } };
+    const found = listMsg.result!.sessions.find((s) => s.id === sessionId);
+    expect(found?.hasPendingApproval).toBe(false);
+
+    // Client B answers the same request late: silently dropped — no error, no
+    // duplicate execution (nothing is sent back to B). B may still have the
+    // tool_call_update broadcast in its queue, so compare before/after.
+    const beforeLateResponse = qB.queue.length;
+    send(wsB, {
+      jsonrpc: "2.0",
+      id: requestId,
+      result: { outcome: { outcome: "selected", optionId: "always" } },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(qB.queue.length).toBe(beforeLateResponse);
+
+    wsA.close();
+    wsB.close();
+  }, 10000);
+
+  test("rejected response fails the tool with the rejection message", async () => {
+    const { ws, q } = await authenticate();
+    const sessionId = await startPermissionPrompt(ws, q);
+
+    const msgs = await collectMessages(q, 2);
+    const request = msgs[1] as PermissionRequestFrame;
+
+    send(ws, {
+      jsonrpc: "2.0",
+      id: request.id,
+      result: { outcome: { outcome: "rejected" } },
+    });
+    const followUps = await collectMessages(q, 2);
+    const toolUpdate = followUps[0] as { params: { update: { status: string; content: unknown } } };
+    const promptResponse = followUps[1] as { result?: { stopReason: string } };
+    expect(toolUpdate.params.update.status).toBe("failed");
+    expect(promptResponse.result?.stopReason).toBe("end_turn");
+
+    ws.close();
+  }, 10000);
+});

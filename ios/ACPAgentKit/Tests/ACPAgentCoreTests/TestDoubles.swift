@@ -86,6 +86,17 @@ final class MockWebSocketTransport: WebSocketTransport, @unchecked Sendable {
             return try? JSONDecoder().decode(JsonRpcNotification.self, from: data)
         }
     }
+
+    /// Frames sent with `result`/`error` — i.e. replies to agent→client
+    /// requests (permission responses).
+    func sentResponses() -> [JsonRpcResponse] {
+        sentMessages.compactMap { text in
+            guard let data = text.data(using: .utf8),
+                  let response = try? JSONDecoder().decode(JsonRpcResponse.self, from: data),
+                  response.result != nil || response.error != nil else { return nil }
+            return response
+        }
+    }
 }
 
 /// Non-Keychain token store so tests never touch the real keychain or
@@ -175,4 +186,32 @@ func toolCallJSON(id: String, title: String, kind: String = "read", status: Stri
 
 func toolCallUpdateJSON(id: String, status: String) -> String {
     #"{"sessionUpdate":"tool_call_update","toolCallId":"\#(id)","status":"\#(status)"}"#
+}
+
+/// A `session/request_permission` frame as the companion broadcasts it (ADR-005
+/// wire shape: envelope id outside `params`).
+func permissionRequestJSON(sessionId: String, requestId: Int, toolTitle: String = "curl -s http://example.com") -> String {
+    #"""
+    {"jsonrpc":"2.0","id":\#(requestId),"method":"session/request_permission","params":{
+      "sessionId":"\#(sessionId)",
+      "toolCall":{"toolCallId":"call_\#(requestId)","title":"\#(toolTitle)","kind":"execute","status":"pending","locations":[{"path":"/etc/hosts"}],"rawInput":{"command":"\#(toolTitle)"}},
+      "options":[
+        {"optionId":"once","kind":"allow_once","name":"Allow once"},
+        {"optionId":"always","kind":"allow_always","name":"Always allow"},
+        {"optionId":"reject","kind":"reject_once","name":"Reject"}
+      ]
+    }}
+    """#
+}
+
+/// The `params` part of a request_permission frame, for buffered replay events.
+func permissionRequestParamsJSON(sessionId: String) -> String {
+    #"""
+    {"sessionId":"\#(sessionId)",
+      "toolCall":{"toolCallId":"call_1","title":"curl -s http://example.com","kind":"execute","status":"pending","locations":[{"path":"/etc/hosts"}],"rawInput":{"command":"curl -s http://example.com"}},
+      "options":[
+        {"optionId":"once","kind":"allow_once","name":"Allow once"},
+        {"optionId":"reject","kind":"reject_once","name":"Reject"}
+      ]}
+    """#
 }
