@@ -11,7 +11,16 @@ const sessions = new Map<string, { cwd: string }>();
 function promptText(prompt: unknown): string {
   if (!Array.isArray(prompt)) return "";
   return prompt
-    .map((b) => (typeof b === "object" && b !== null && typeof (b as { text?: unknown }).text === "string" ? (b as { text: string }).text : ""))
+    .map((b) => {
+      if (typeof b !== "object" || b === null) return "";
+      const obj = b as Record<string, unknown>;
+      if (obj.type === "text" && typeof obj.text === "string") return obj.text;
+      if (obj.type === "resource" && typeof obj.resource === "object" && obj.resource !== null) {
+        const r = obj.resource as { text?: unknown };
+        return typeof r.text === "string" ? r.text : "";
+      }
+      return "";
+    })
     .join("");
 }
 

@@ -29,15 +29,13 @@ function handleRequest(msg: { id: number | string; method: string; params?: unkn
         result: {
           protocolVersion: 1,
           agentCapabilities: {
-            promptCapabilities: { embeddedContext: true },
+            promptCapabilities: {},
             loadSession: true,
           },
-          agentInfo: { name: "mock-agent", version: "1.0.0" },
-          authMethods: [{ id: "agent-login", name: "Agent login" }],
+          agentInfo: { name: "mock-agent-no-embedded", version: "1.0.0" },
+          authMethods: [],
         },
       });
-    case "authenticate":
-      return encodeFrame({ jsonrpc: "2.0", id: msg.id, result: {} });
     case "session/new": {
       const p = (msg.params ?? {}) as { cwd?: string; mcpServers?: unknown };
       const sessionId = SESSION_PREFIX + Math.random().toString(16).slice(2, 10);
@@ -69,8 +67,7 @@ function handleRequest(msg: { id: number | string; method: string; params?: unkn
 }
 
 const parser = createFramedParser();
-const stdin = Bun.stdin.stream();
-const reader = stdin.getReader();
+const reader = Bun.stdin.stream().getReader();
 const pump = async (): Promise<void> => {
   for (;;) {
     const { done, value } = await reader.read();
@@ -84,10 +81,9 @@ const pump = async (): Promise<void> => {
         continue;
       }
       if (isRequest(msg)) {
-        const out = handleRequest({ id: msg.id as number | string, method: msg.method, params: msg.params });
-        void Bun.stdout.write(out);
+        void Bun.stdout.write(handleRequest({ id: msg.id as number | string, method: msg.method, params: msg.params }));
       } else if (isNotification(msg) || isResponse(msg)) {
-        // notifications / out-of-order responses are ignored by the mock
+        // ignored
       }
     }
   }

@@ -12,12 +12,14 @@ import {
   makeResponse,
   RpcError,
 } from "./rpc";
+import { searchFiles } from "./file-search";
+import { expandPrompt } from "./prompt-expander";
 
 interface ClientState {
   authenticated: boolean;
 }
 
-const LOCAL_METHODS = new Set(["auth", "initialize", "session.list", "session.resume", "session.end"]);
+const LOCAL_METHODS = new Set(["auth", "initialize", "session.list", "session.resume", "session.end", "files.search"]);
 
 // opencode requires mcpServers on session lifecycle requests; inject an empty
 // default so clients don't have to know.
@@ -167,6 +169,10 @@ export class CompanionServer {
       this.handleSessionEnd(ws, id, params);
       return;
     }
+    if (method === "files.search") {
+      this.handleFilesSearch(ws, id, params);
+      return;
+    }
     this.send(ws, makeError(id, ErrorCodes.MethodNotFound, `unknown local method ${method}`));
   }
 
@@ -278,6 +284,32 @@ export class CompanionServer {
     return (caps as { loadSession?: unknown }).loadSession === true;
   }
 
+  private agentSupportsEmbeddedContext(): boolean {
+    const caps = this.agentInfo.agentCapabilities;
+    if (typeof caps !== "object" || caps === null) return false;
+    const pc = (caps as { promptCapabilities?: unknown }).promptCapabilities;
+    if (typeof pc !== "object" || pc === null) return false;
+    return (pc as { embeddedContext?: unknown }).embeddedContext === true;
+  }
+
+  private handleFilesSearch(ws: ServerWebSocket<ClientState>, id: string | number, params: unknown): void {
+    const p = (params ?? {}) as Record<string, unknown>;
+    const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+    const query = typeof p.query === "string" ? p.query : "";
+    if (!sessionId) {
+      this.send(ws, makeError(id, ErrorCodes.InvalidParams, "sessionId is required"));
+      return;
+    }
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      this.send(ws, makeError(id, ErrorCodes.InvalidParams, "session not found"));
+      return;
+    }
+    const limit = typeof p.limit === "number" && Number.isInteger(p.limit) && p.limit > 0 ? p.limit : 20;
+    const results = searchFiles(session.cwd, query, limit);
+    this.send(ws, makeResponse(id, { files: results }));
+  }
+
   private recordEvent(method: string, params: unknown): number | undefined {
     if (method !== "session/update") return undefined;
     const sessionId = this.sessionIdFromParams(params);
@@ -319,7 +351,7 @@ export class CompanionServer {
     msg: { id?: number | string; method: string; params?: unknown },
   ): Promise<void> {
     try {
-      const params = this.normalizeParams(msg.method, msg.params);
+      const params = await this.expandParams(msg.method, msg.params);
       if (isNotification(msg)) {
         this.acp.notify(msg.method, params);
         return;
@@ -348,6 +380,23 @@ export class CompanionServer {
     if (r.sessionId) {
       this.sessions.create(r.sessionId, p.cwd ?? "/");
     }
+  }
+
+  private async expandParams(method: string, params: unknown): Promise<unknown> {
+    const normalized = this.normalizeParams(method, params);
+    if (method !== "session/prompt") return normalized;
+
+    const p = (normalized ?? {}) as Record<string, unknown>;
+    const sessionId = typeof p.sessionId === "string" ? p.sessionId : "";
+    const prompt = p.prompt;
+    if (!sessionId || !Array.isArray(prompt)) return normalized;
+
+    const session = this.sessions.get(sessionId);
+    if (!session) return normalized;
+
+    const embeddedContext = this.agentSupportsEmbeddedContext();
+    const expanded = await expandPrompt(prompt, session.cwd, embeddedContext);
+    return { ...p, prompt: expanded };
   }
 
   private normalizeParams(method: string, params: unknown): unknown {
