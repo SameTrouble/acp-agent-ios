@@ -59,6 +59,14 @@ import Testing
         """#)
 
         #expect(request.toolCall.content == ["Diff: /proj/a.txt"])
+        // ADR-003: the diff block is also decoded structurally, with the
+        // unified diff computed client-side from old/new texts.
+        #expect(request.toolCall.diffs.count == 1)
+        #expect(request.toolCall.diffs[0].path == "/proj/a.txt")
+        #expect(request.toolCall.diffs[0].oldText == "a")
+        #expect(request.toolCall.diffs[0].newText == "b")
+        #expect(request.toolCall.diffs[0].addedCount == 1)
+        #expect(request.toolCall.diffs[0].removedCount == 1)
     }
 
     @Test func unknownOptionKindFallsBackToRejectSemantics() throws {

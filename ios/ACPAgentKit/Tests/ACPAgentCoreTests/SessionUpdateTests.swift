@@ -117,16 +117,59 @@ import Testing
         #expect(delta.content == ["line one", "line two"])
     }
 
-    @Test func decodesDiffToolCallContentAsSummary() throws {
+    @Test func decodesDiffToolCallContentStructurally() throws {
+        // Live-verified (issue #9, opencode 1.18.13): edit tools carry
+        // `{type: "diff", path, oldText, newText}` blocks on the final
+        // `tool_call_update`; the unified diff is computed client-side.
         let notification = try decode(#"""
-        {"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","content":[{"type":"diff","path":"/proj/a.txt","oldText":"a","newText":"b"}]}}
+        {"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","content":[{"type":"diff","path":"/proj/a.txt","oldText":"hello","newText":"hello world"}]}}
         """#)
 
         guard case .toolCallUpdate(let delta) = notification.update else {
             Issue.record("Expected toolCallUpdate")
             return
         }
-        #expect(delta.content == ["Diff: /proj/a.txt"])
+        #expect(delta.content == [])
+        let diff = try #require(delta.diffs?.first)
+        #expect(diff.path == "/proj/a.txt")
+        #expect(diff.oldText == "hello")
+        #expect(diff.newText == "hello world")
+        #expect(diff.addedCount == 1)
+        #expect(diff.removedCount == 1)
+        #expect(diff.lines == [
+            DiffLine(kind: .hunkHeader, text: "@@ -1 +1 @@"),
+            DiffLine(kind: .deletion, text: "hello"),
+            DiffLine(kind: .addition, text: "hello world"),
+        ])
+    }
+
+    @Test func decodesMixedTextAndDiffContentBlocks() throws {
+        let notification = try decode(#"""
+        {"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","content":[{"type":"content","content":{"type":"text","text":"Edit applied successfully."}},{"type":"diff","path":"/p/a.txt","oldText":"a","newText":"b"}]}}
+        """#)
+
+        guard case .toolCallUpdate(let delta) = notification.update else {
+            Issue.record("Expected toolCallUpdate")
+            return
+        }
+        #expect(delta.content == ["Edit applied successfully."])
+        #expect(delta.diffs?.count == 1)
+        #expect(delta.diffs?.first?.path == "/p/a.txt")
+    }
+
+    @Test func diffBlockWithoutNewTextIsAllDeletions() throws {
+        let notification = try decode(#"""
+        {"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","content":[{"type":"diff","path":"/p/a.txt","oldText":"gone"}]}}
+        """#)
+
+        guard case .toolCallUpdate(let delta) = notification.update else {
+            Issue.record("Expected toolCallUpdate")
+            return
+        }
+        let diff = try #require(delta.diffs?.first)
+        #expect(diff.newText == "")
+        #expect(diff.addedCount == 0)
+        #expect(diff.removedCount == 1)
     }
 
     @Test func decodesPlanEntries() throws {

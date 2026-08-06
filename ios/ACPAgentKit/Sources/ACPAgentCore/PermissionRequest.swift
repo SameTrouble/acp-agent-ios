@@ -70,6 +70,10 @@ public struct PermissionToolCall: Codable, Equatable, Sendable {
     /// Decoded `content` preview blocks: `diff` entries become "Diff: <path>"
     /// summaries, text entries keep their text (same shape as `ToolCallCard`).
     public let content: [String]
+    /// Structurally decoded `{type: "diff"}` preview blocks (ADR-003): the
+    /// edit's old/new texts with a client-computed unified diff. The card
+    /// still renders the path summary; this is the machine-readable form.
+    public let diffs: [FileDiff]
 
     public init(
         toolCallId: String,
@@ -77,7 +81,8 @@ public struct PermissionToolCall: Codable, Equatable, Sendable {
         kind: String? = nil,
         locations: [String] = [],
         rawInput: [String: AnyCodable]? = nil,
-        content: [String] = []
+        content: [String] = [],
+        diffs: [FileDiff] = []
     ) {
         self.toolCallId = toolCallId
         self.title = title
@@ -85,6 +90,7 @@ public struct PermissionToolCall: Codable, Equatable, Sendable {
         self.locations = locations
         self.rawInput = rawInput
         self.content = content
+        self.diffs = diffs
     }
 
     enum CodingKeys: String, CodingKey {
@@ -115,9 +121,15 @@ public struct PermissionToolCall: Codable, Equatable, Sendable {
         if container.contains(.content) {
             let rawContent = try container.decode([AnyCodable].self, forKey: .content)
             content = rawContent.compactMap { Self.summariseContentBlock($0) }
+            diffs = rawContent.compactMap { Self.decodeDiffBlock($0) }
         } else {
             content = []
+            diffs = []
         }
+    }
+
+    private static func decodeDiffBlock(_ item: AnyCodable) -> FileDiff? {
+        FileDiff.decode(from: item)
     }
 
     private static func summariseContentBlock(_ item: AnyCodable) -> String? {

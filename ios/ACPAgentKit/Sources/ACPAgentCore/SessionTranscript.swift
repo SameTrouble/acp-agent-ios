@@ -27,6 +27,9 @@ public struct ToolCallCard: Identifiable, Equatable, Sendable {
     public var status: ToolCallStatus
     public var locations: [String]
     public var content: [String]
+    /// File diffs ride the final `tool_call_update` (live-verified, issue #9),
+    /// so a card usually starts with zero diffs and gains them on merge.
+    public var diffs: [FileDiff]
 
     init(delta: ToolCallDelta) {
         self.id = delta.toolCallId
@@ -35,6 +38,7 @@ public struct ToolCallCard: Identifiable, Equatable, Sendable {
         self.status = delta.status ?? .pending
         self.locations = delta.locations ?? []
         self.content = delta.content ?? []
+        self.diffs = delta.diffs ?? []
     }
 
     mutating func merge(_ delta: ToolCallDelta) {
@@ -43,6 +47,15 @@ public struct ToolCallCard: Identifiable, Equatable, Sendable {
         if let status = delta.status { self.status = status }
         if let locations = delta.locations { self.locations = locations }
         if let content = delta.content { self.content.append(contentsOf: content) }
+        if let newDiffs = delta.diffs {
+            for diff in newDiffs {
+                if let index = self.diffs.firstIndex(where: { $0.path == diff.path }) {
+                    self.diffs[index] = diff
+                } else {
+                    self.diffs.append(diff)
+                }
+            }
+        }
     }
 }
 
