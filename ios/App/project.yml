@@ -1,0 +1,47 @@
+name: ACPAgent
+options:
+  bundleIdPrefix: com.acp-agent
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6"
+    DEVELOPMENT_TEAM: ""
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    TARGETED_DEVICE_FAMILY: "1"
+packages:
+  ACPAgentCore:
+    path: ../ACPAgentKit
+targets:
+  ACPAgent:
+    type: application
+    platform: iOS
+    sources:
+      - path: ACPAgent
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.acp-agent.ios
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_PREVIEWS: YES
+    dependencies:
+      - package: ACPAgentCore
+        product: ACPAgentCore
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: ACP Agent
+        CFBundleShortVersionString: 0.1.0
+        CFBundleVersion: 1
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # Local companion servers are typically plain ws:// on a LAN address,
+        # which ATS blocks by default. Allow local networking only — arbitrary
+        # loads stay off so remote endpoints must use wss://.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
