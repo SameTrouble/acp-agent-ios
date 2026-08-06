@@ -276,6 +276,17 @@ public final class JsonRpcClient: @unchecked Sendable {
         }
     }
 
+    /// Fire-and-forget message with no `id`, so the peer must not reply.
+    /// `session/cancel` is specified as a notification, not a request.
+    public func notify(_ method: String, params: [String: AnyCodable]? = nil) async throws {
+        let notification = JsonRpcNotification(method: method, params: params)
+        let data = try encoder.encode(notification)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw ConnectionError.connectionFailed("Failed to encode notification")
+        }
+        try await transport.send(text)
+    }
+
     private func handleMessage(_ text: String) {
         guard let data = text.data(using: .utf8) else { return }
         do {

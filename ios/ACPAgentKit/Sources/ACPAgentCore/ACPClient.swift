@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 @MainActor
@@ -15,6 +16,13 @@ public final class ACPClient: ObservableObject {
     private let rpc: JsonRpcClient
     private let transport: any WebSocketTransport
     private let tokenStore: any TokenStore
+    // Lazy so the `isConnected` closure can capture `self` — the conversation
+    // actions' connection gate belongs to the client's lifecycle. First touched
+    // in `init` by the change-signal forwarding below.
+    private lazy var conversationStore: ConversationStore = ConversationStore(rpc: rpc) { [weak self] in
+        self?.connectionState == .connected
+    }
+    private var conversationCancellable: AnyCancellable?
 
     public private(set) var endpoint: ServerEndpoint?
     public private(set) var token: String?
@@ -33,6 +41,21 @@ public final class ACPClient: ObservableObject {
         self.rpc.onNotificationHandler = { [weak self] notification in
             Task { @MainActor in self?.handleNotification(notification) }
         }
+        // `ConversationStore` is not a view seam (ADR-001/ADR-004), so its
+        // change signal is forwarded through the client to keep views that
+        // observe `conversation(for:)` via `@EnvironmentObject` re-rendering.
+        conversationCancellable = conversationStore.objectWillChange.sink { [weak self] in
+            MainActor.assumeIsolated {
+                self?.objectWillChange.send()
+            }
+        }
+    }
+
+    /// Read-only access to a session's conversation state. A new, empty one is
+    /// vended on first access so the view can subscribe immediately. The state
+    /// itself is owned by the `ConversationStore`.
+    public func conversation(for sessionId: String) -> SessionConversation {
+        conversationStore.conversation(for: sessionId)
     }
 
     // MARK: - Connection lifecycle
@@ -90,6 +113,8 @@ public final class ACPClient: ObservableObject {
         _ = await connect(endpoint: endpoint, token: token)
     }
 
+    /// Drops the socket but keeps transcripts, so a reconnect can resume each
+    /// session from its last cursor instead of losing the screen.
     public func disconnect() async {
         await rpc.disconnect()
         connectionState = .disconnected
@@ -104,6 +129,7 @@ public final class ACPClient: ObservableObject {
         self.token = nil
         self.endpoint = nil
         await disconnect()
+        conversationStore.clearAll()
     }
 
     // MARK: - Session list
@@ -117,6 +143,30 @@ public final class ACPClient: ObservableObject {
         let list = try result.decode(SessionListResponse.self)
         sessions = list.sessions
         return list.sessions
+    }
+
+    // MARK: - Session conversation
+
+    /// Resumes a session, replaying any buffered events the client has missed
+    /// since its last known cursor. The resulting transcript and cursor are
+    /// stored in the `ConversationStore`.
+    @discardableResult
+    public func resumeSession(id sessionId: String) async throws -> SessionResumeResponse {
+        try await conversationStore.resumeSession(id: sessionId)
+    }
+
+    /// Sends a text prompt to the session. The message is optimistically
+    /// inserted into the transcript as a local user bubble while the request is
+    /// in flight.
+    @discardableResult
+    public func sendPrompt(sessionId: String, text: String) async throws -> String? {
+        try await conversationStore.sendPrompt(sessionId: sessionId, text: text)
+    }
+
+    /// Issues a `session/cancel` notification to stop the current generation.
+    /// Safe to call repeatedly; a no-op when nothing is in flight.
+    public func cancelSession(id sessionId: String) async throws {
+        try await conversationStore.cancelSession(id: sessionId)
     }
 
     // MARK: - Persistence helpers
@@ -135,10 +185,17 @@ public final class ACPClient: ObservableObject {
     // MARK: - Notifications
 
     private func handleNotification(_ notification: JsonRpcNotification) {
-        if notification.method == "session/update" {
-            Task {
-                _ = try? await self.refreshSessions()
-            }
+        guard notification.method == "session/update" else { return }
+
+        if let params = notification.params,
+           let update = try? AnyCodable(params).decode(SessionUpdateNotification.self) {
+            conversationStore.applySessionUpdate(update, cursor: notification.cursor)
+        }
+
+        // The session's `lastActiveAt` and status live on the list, so keep it
+        // in step with the stream.
+        Task {
+            _ = try? await self.refreshSessions()
         }
     }
 }

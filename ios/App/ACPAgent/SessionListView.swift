@@ -24,7 +24,9 @@ struct SessionListView: View {
                         ForEach(client.sessions.groupedByProject()) { group in
                             Section {
                                 ForEach(group.sessions) { session in
-                                    SessionRow(session: session)
+                                    NavigationLink(value: session.id) {
+                                        SessionRow(session: session)
+                                    }
                                 }
                             } header: {
                                 HStack {
@@ -40,6 +42,9 @@ struct SessionListView: View {
                         }
                     }
                     .listStyle(.insetGrouped)
+                    .navigationDestination(for: String.self) { sessionId in
+                        SessionDetailView(sessionId: sessionId)
+                    }
                 }
             }
             .navigationTitle("Sessions")
