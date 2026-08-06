@@ -108,6 +108,40 @@ import Testing
         await client.disconnect()
         await request
     }
+
+    @Test func agentRequestsAreForwardedToTheRequestHandler() async {
+        let transport = MockWebSocketTransport()
+        let client = JsonRpcClient(transport: transport)
+
+        let received = ActorLocked(value: [String]())
+        client.onRequestHandler = { request in
+            Task { await received.append(request.method) }
+        }
+
+        try? await client.connect(url: URL(string: "ws://localhost:8787")!)
+        transport.emit(permissionRequestJSON(sessionId: "s1", requestId: 0))
+
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let methods = await received.value
+        #expect(methods == ["session/request_permission"])
+    }
+
+    @Test func respondSendsResponseFrameWithMatchingId() async throws {
+        let transport = MockWebSocketTransport()
+        let client = JsonRpcClient(transport: transport)
+        try await client.connect(url: URL(string: "ws://localhost:8787")!)
+
+        let result = AnyCodable(["outcome": AnyCodable(["outcome": AnyCodable("selected"), "optionId": AnyCodable("once")])])
+        try await client.respond(id: .number(7), result: result)
+
+        let responses = transport.sentResponses()
+        #expect(responses.count == 1)
+        #expect(responses[0].id == .number(7))
+        let outcome = responses[0].result?.value.base as? [String: AnyCodable]
+        let inner = outcome?["outcome"]?.value.base as? [String: AnyCodable]
+        #expect(inner?["outcome"]?.value.base as? String == "selected")
+        #expect(inner?["optionId"]?.value.base as? String == "once")
+    }
 }
 
 /// Actor-backed collector, because NSLock is unavailable from async contexts.

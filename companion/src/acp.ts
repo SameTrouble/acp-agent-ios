@@ -1,8 +1,10 @@
 import { spawn, type Subprocess } from "bun";
-import { createFramedParser, encodeFrame, isNotification, isResponse, makeRequest, RpcError } from "./rpc";
+import { createFramedParser, encodeFrame, isNotification, isRequest, isResponse, makeRequest, RpcError } from "./rpc";
 import type { AgentConfig } from "./config";
 
 export type NotificationHandler = (msg: { method: string; params?: unknown }) => void;
+
+export type RequestHandler = (msg: { id: number | string; method: string; params?: unknown }) => void;
 
 export interface InitializeResult {
   protocolVersion: number;
@@ -18,6 +20,7 @@ interface PendingRequest {
 
 export interface AcpClientOptions {
   onNotification?: NotificationHandler;
+  onRequest?: RequestHandler;
   onExit?: (code: number | null) => void;
   stderr?: (line: string) => void;
 }
@@ -28,12 +31,14 @@ export class AcpClient {
   private pending = new Map<number, PendingRequest>();
   private writeChain: Promise<void> = Promise.resolve();
   private onNotification: NotificationHandler | undefined;
+  private onRequest: RequestHandler | undefined;
   private onExit: ((code: number | null) => void) | undefined;
   private stderr: ((line: string) => void) | undefined;
 
   private constructor(proc: Subprocess, opts: AcpClientOptions) {
     this.proc = proc;
     this.onNotification = opts.onNotification;
+    this.onRequest = opts.onRequest;
     this.onExit = opts.onExit;
     this.stderr = opts.stderr;
     this.proc.exited.then((code) => {
@@ -58,6 +63,10 @@ export class AcpClient {
 
   setNotificationHandler(handler: NotificationHandler): void {
     this.onNotification = handler;
+  }
+
+  setRequestHandler(handler: RequestHandler): void {
+    this.onRequest = handler;
   }
 
   private readStdout(): void {
@@ -121,6 +130,8 @@ export class AcpClient {
       }
     } else if (isNotification(msg)) {
       this.onNotification?.({ method: msg.method, params: msg.params });
+    } else if (isRequest(msg)) {
+      this.onRequest?.({ id: msg.id as number | string, method: msg.method, params: msg.params });
     }
   }
 
@@ -144,6 +155,22 @@ export class AcpClient {
 
   notify(method: string, params?: unknown): void {
     this.write(encodeFrame({ jsonrpc: "2.0", method, ...(params !== undefined ? { params } : {}) }));
+  }
+
+  /**
+   * Replies to an agent→client request (e.g. `session/request_permission`),
+   * echoing the request's `id` (ADR-005 response expectations).
+   */
+  respond(id: number | string, result?: unknown): void {
+    this.write(encodeFrame({ jsonrpc: "2.0", id, ...(result !== undefined ? { result } : {}) }));
+  }
+
+  /**
+   * Replies with an error to an agent→client request. opencode treats any
+   * error reply to `session/request_permission` as a rejection.
+   */
+  respondError(id: number | string, code: number, message: string): void {
+    this.write(encodeFrame({ jsonrpc: "2.0", id, error: { code, message } }));
   }
 
   async initialize(): Promise<InitializeResult> {

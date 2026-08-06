@@ -1,7 +1,7 @@
 import Foundation
 
 /// Owns all per-session conversation state — the `conversations` map — and the
-/// conversation actions (resume, send, cancel; approve/reject later).
+/// conversation actions (resume, send, cancel, permission approve/reject).
 ///
 /// `ACPClient` delegates to it and remains the only view-facing seam
 /// (ADR-001/ADR-004); internal to the module so views cannot reach it.
@@ -53,8 +53,11 @@ final class ConversationStore: ObservableObject {
             conv.recoveryReason = response.reason
 
             for event in response.events {
-                guard let update = event.params else { continue }
-                conv.apply(update.update, cursor: event.cursor)
+                if let request = event.request {
+                    conv.applyApprovalRequest(request, cursor: event.cursor)
+                } else if let update = event.params {
+                    conv.apply(update.update, cursor: event.cursor)
+                }
             }
             if let cursor = response.cursor {
                 conv.advanceCursor(to: cursor)
@@ -133,14 +136,54 @@ final class ConversationStore: ObservableObject {
         }
     }
 
+    // MARK: - Permissions
+
+    /// Applies a live `session/request_permission` request, adding a pending
+    /// approval card to the session's transcript.
+    func applyPermissionRequest(_ request: PermissionRequest) {
+        mutateConversation(request.sessionId) { conv in
+            conv.applyApprovalRequest(request, cursor: nil)
+        }
+    }
+
+    /// Responds to a pending permission request, echoing the request's JSON-RPC
+    /// id with the ADR-005 result shape. Only the first answer counts: once the
+    /// card is terminal (this device or another), further calls are silent
+    /// no-ops — nothing is sent, nothing errors, nothing executes twice.
+    func respondToPermission(sessionId: String, requestId: JsonRpcId, option: PermissionOption) async throws {
+        guard isConnected() else {
+            throw ConnectionError.notConnected
+        }
+
+        let state: PermissionState = option.isAllow
+            ? .approved(optionId: option.optionId)
+            : .rejected
+        let transitioned = mutateConversation(sessionId) { conv in
+            conv.resolveApproval(requestId: requestId, state: state)
+        }
+        guard transitioned else { return }
+
+        do {
+            try await rpc.respond(id: requestId, result: option.wireResult)
+        } catch {
+            // Put the card back to pending so the user can retry.
+            mutateConversation(sessionId) { conv in
+                _ = conv.revertApproval(requestId: requestId)
+            }
+            throw error
+        }
+    }
+
     /// Drops all conversation state, e.g. on sign-out.
     func clearAll() {
         conversations = [:]
     }
 
-    private func mutateConversation(_ sessionId: String, _ update: (inout SessionConversation) -> Void) {
+    @discardableResult
+    private func mutateConversation<T>(_ sessionId: String, _ update: (inout SessionConversation) -> T) -> T {
         var conv = conversation(for: sessionId)
-        update(&conv)
+        let result = update(&conv)
         conversations[sessionId] = conv
+        return result
     }
 }

@@ -41,6 +41,9 @@ public final class ACPClient: ObservableObject {
         self.rpc.onNotificationHandler = { [weak self] notification in
             Task { @MainActor in self?.handleNotification(notification) }
         }
+        self.rpc.onRequestHandler = { [weak self] request in
+            Task { @MainActor in self?.handleRequest(request) }
+        }
         // `ConversationStore` is not a view seam (ADR-001/ADR-004), so its
         // change signal is forwarded through the client to keep views that
         // observe `conversation(for:)` via `@EnvironmentObject` re-rendering.
@@ -169,6 +172,15 @@ public final class ACPClient: ObservableObject {
         try await conversationStore.cancelSession(id: sessionId)
     }
 
+    /// Responds to a pending permission request with the chosen option. The
+    /// card turns terminal and the receipt is sent back to the agent; a second
+    /// answer to the same request is a silent no-op.
+    public func respondToPermission(sessionId: String, requestId: JsonRpcId, option: PermissionOption) async throws {
+        try await conversationStore.respondToPermission(sessionId: sessionId, requestId: requestId, option: option)
+        // Keep the session-list pending badge in step with the resolution.
+        Task { _ = try? await self.refreshSessions() }
+    }
+
     // MARK: - Persistence helpers
 
     public func loadPersistedCredentials() -> (endpoint: ServerEndpoint, token: String)? {
@@ -194,6 +206,23 @@ public final class ACPClient: ObservableObject {
 
         // The session's `lastActiveAt` and status live on the list, so keep it
         // in step with the stream.
+        Task {
+            _ = try? await self.refreshSessions()
+        }
+    }
+
+    /// Agent→client JSON-RPC requests (ADR-005): `session/request_permission`
+    /// is decoded structurally and lands in the `ConversationStore` as a
+    /// pending approval card. Anything else is not yet understood and ignored.
+    private func handleRequest(_ request: JsonRpcRequest) {
+        guard request.method == "session/request_permission",
+              let params = request.params,
+              var permission = try? AnyCodable(params).decode(PermissionRequest.self) else {
+            return
+        }
+        permission.requestId = request.id
+        conversationStore.applyPermissionRequest(permission)
+        // The pending-approval badge on the session list follows the request.
         Task {
             _ = try? await self.refreshSessions()
         }

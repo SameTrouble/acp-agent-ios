@@ -328,6 +328,93 @@ import Testing
         }
     }
 
+    // MARK: - permission requests
+
+    @Test func permissionRequestAppearsAsApprovalCardInConversation() async throws {
+        let transport = MockWebSocketTransport()
+        let client = await connectedClient(transport)
+
+        transport.emit(permissionRequestJSON(sessionId: "s1", requestId: 0))
+
+        let arrived = await waitUntil {
+            !client.conversation(for: "s1").transcript.approvalCards.isEmpty
+        }
+        #expect(arrived)
+        let card = client.conversation(for: "s1").transcript.approvalCards.first
+        #expect(card?.requestId == .number(0))
+        #expect(card?.state == .pending)
+        #expect(card?.toolCall.title == "curl -s http://example.com")
+        #expect(card?.options.count == 3)
+    }
+
+    @Test func permissionRequestIsDeduplicatedWhenRebroadcast() async throws {
+        let transport = MockWebSocketTransport()
+        let client = await connectedClient(transport)
+
+        transport.emit(permissionRequestJSON(sessionId: "s1", requestId: 2))
+        _ = await waitUntil {
+            !client.conversation(for: "s1").transcript.approvalCards.isEmpty
+        }
+        transport.emit(permissionRequestJSON(sessionId: "s1", requestId: 2))
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        #expect(client.conversation(for: "s1").transcript.approvalCards.count == 1)
+    }
+
+    @Test func unknownAgentRequestMethodIsIgnored() async throws {
+        let transport = MockWebSocketTransport()
+        let client = await connectedClient(transport)
+
+        transport.emit(#"{"jsonrpc":"2.0","id":9,"method":"session/something_else","params":{}}"#)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        #expect(client.conversation(for: "s1").transcript.items.isEmpty)
+    }
+
+    @Test func resumeReplaysBufferedPermissionRequest() async throws {
+        let transport = MockWebSocketTransport()
+        transport.responders["session.resume"] = { id, _ in
+            let events = [
+                #"{"method":"session/request_permission","params":\#(permissionRequestParamsJSON(sessionId: "s1")),"id":7,"cursor":1}"#,
+                #"{"method":"session/update","params":{"sessionId":"s1","update":\#(agentChunkJSON("done"))},"cursor":2}"#,
+            ].joined(separator: ",")
+            return successResponse(id: id, resultJSON: #"{"sessionId":"s1","recovery":"replay","events":[\#(events)],"cursor":2}"#)
+        }
+        let client = await connectedClient(transport)
+
+        try await client.resumeSession(id: "s1")
+
+        let conversation = client.conversation(for: "s1")
+        #expect(conversation.cursor == 2)
+        let card = conversation.transcript.approvalCards.first
+        #expect(card?.requestId == .number(7))
+        #expect(card?.state == .pending)
+        #expect(conversation.transcript.messages.first?.text == "done")
+    }
+
+    @Test func respondingThroughTheClientTurnsTheCardTerminal() async throws {
+        let transport = MockWebSocketTransport()
+        let client = await connectedClient(transport)
+
+        transport.emit(permissionRequestJSON(sessionId: "s1", requestId: 3))
+        _ = await waitUntil {
+            !client.conversation(for: "s1").transcript.approvalCards.isEmpty
+        }
+
+        try await client.respondToPermission(
+            sessionId: "s1",
+            requestId: .number(3),
+            option: PermissionOption(optionId: "once", kind: .allowOnce, name: "Allow once")
+        )
+
+        #expect(client.conversation(for: "s1").transcript.approvalCards.first?.state == .approved(optionId: "once"))
+        let response = transport.sentResponses().first
+        #expect(response?.id == .number(3))
+        let outcome = response?.result?.value.base as? [String: AnyCodable]
+        let inner = outcome?["outcome"]?.value.base as? [String: AnyCodable]
+        #expect(inner?["outcome"]?.value.base as? String == "selected")
+    }
+
     // MARK: - conversation change forwarding
 
     /// Views observe conversation state only through the `ACPClient`

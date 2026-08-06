@@ -9,11 +9,17 @@ public enum ToolCallKind: String, Codable, Equatable, Sendable {
     case other
 }
 
+/// Status values follow the observed opencode wire (ADR-005): `in_progress`
+/// and `failed` are real `tool_call_update` values — without them an in-flight
+/// tool would decode to `.pending` forever and a rejected tool would never
+/// show its failure.
 public enum ToolCallStatus: String, Codable, Equatable, Sendable {
     case pending
     case running
+    case inProgress = "in_progress"
     case completed
     case error
+    case failed
 }
 
 public enum PlanEntryStatus: String, Codable, Equatable, Sendable {
@@ -284,13 +290,15 @@ extension ToolCallStatus {
         switch self {
         case .pending: return "Pending"
         case .running: return "Running"
+        case .inProgress: return "In Progress"
         case .completed: return "Completed"
         case .error: return "Error"
+        case .failed: return "Failed"
         }
     }
 
     public var isTerminal: Bool {
-        self == .completed || self == .error
+        self == .completed || self == .error || self == .failed
     }
 }
 

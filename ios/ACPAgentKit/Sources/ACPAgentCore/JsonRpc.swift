@@ -22,6 +22,14 @@ public enum JsonRpcId: Codable, Equatable, Sendable {
         case .number(let value): try container.encode(value)
         }
     }
+
+    /// Stable string form for use as a lookup key / transcript id.
+    public var wireKey: String {
+        switch self {
+        case .number(let n): return "\(n)"
+        case .string(let s): return s
+        }
+    }
 }
 
 public struct JsonRpcRequest: Codable, Equatable, Sendable {
@@ -72,6 +80,13 @@ public struct JsonRpcResponse: Codable, Equatable, Sendable {
     public let id: JsonRpcId
     public let result: AnyCodable?
     public let error: JsonRpcError?
+
+    public init(jsonrpc: String = "2.0", id: JsonRpcId, result: AnyCodable? = nil, error: JsonRpcError? = nil) {
+        self.jsonrpc = jsonrpc
+        self.id = id
+        self.result = result
+        self.error = error
+    }
 
     public var isSuccess: Bool { error == nil && result != nil }
 }
