@@ -46,3 +46,11 @@ A `sessionUpdate` wire type the client does not recognise. Decoded by
 name only and silently dropped from the transcript; expected to be rare
 per ADR-002/003.
 _Avoid_: unknown event, error
+
+**Markdown segment**:
+One piece of a message split out for rendering by `MarkdownContent`:
+either a rich-text piece (lists, bold, italic, inline code) or a fenced
+code block with its language hint. Non-code pieces still go through
+`AttributedString(markdown:)`; code blocks are rendered as monospaced
+cards without parsing.
+_Avoid_: block, chunk, code card

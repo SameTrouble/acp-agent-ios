@@ -148,10 +148,7 @@ private struct MessageBubble: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text(attributedText)
-                    .textSelection(.enabled)
-                    .font(.body)
-                    .foregroundStyle(message.role == .user ? .white : .primary)
+                markdownContent
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(bubbleBackground)
@@ -172,19 +169,71 @@ private struct MessageBubble: View {
         }
     }
 
-    private var attributedText: AttributedString {
-        let raw = message.text.isEmpty ? " " : message.text
-        if let markdown = try? AttributedString(markdown: raw, options: markdownOptions) {
-            return markdown
+    // MARK: - Markdown rendering
+
+    @ViewBuilder
+    private var markdownContent: some View {
+        if message.text.isEmpty {
+            // 保留既有的占位行为，气泡保持最小高度。
+            Text(" ")
+        } else {
+            let segments = MarkdownContent.segments(from: message.text)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(segments.indices, id: \.self) { index in
+                    segmentView(segments[index])
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        return AttributedString(raw)
     }
 
-    private var markdownOptions: AttributedString.MarkdownParsingOptions {
-        var opts = AttributedString.MarkdownParsingOptions()
-        opts.allowsExtendedAttributes = true
-        opts.interpretedSyntax = .full
-        return opts
+    @ViewBuilder
+    private func segmentView(_ segment: MarkdownSegment) -> some View {
+        switch segment {
+        case .text(let attr):
+            Text(styledInlineCode(in: attr))
+                .textSelection(.enabled)
+                .font(.body)
+                .foregroundStyle(message.role == .user ? .white : .primary)
+        case .codeBlock(let content, _):
+            CodeBlockCard(content: content, isUser: message.role == .user)
+        }
+    }
+
+    /// 行内 code（`inlinePresentationIntent` 含 `.code` 的 run）以等宽字体 +
+    /// 浅背景区分，其余 run 保持原样。
+    private func styledInlineCode(in attr: AttributedString) -> AttributedString {
+        var result = attr
+        for run in result.runs {
+            guard let intent = run.inlinePresentationIntent, intent.contains(.code) else {
+                continue
+            }
+            result[run.range].font = .system(.body, design: .monospaced)
+            result[run.range].backgroundColor = inlineCodeBackground
+        }
+        return result
+    }
+
+    private var inlineCodeBackground: Color {
+        message.role == .user ? .white.opacity(0.15) : .primary.opacity(0.08)
+    }
+}
+
+// MARK: - Code block card
+
+private struct CodeBlockCard: View {
+    let content: String
+    let isUser: Bool
+
+    var body: some View {
+        Text(content)
+            .font(.system(.callout, design: .monospaced))
+            .foregroundStyle(isUser ? .white : .primary)
+            .textSelection(.enabled)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isUser ? Color.white.opacity(0.15) : Color(.quaternarySystemFill))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
