@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Testing
 @testable import ACPAgentCore
@@ -325,6 +326,26 @@ import Testing
         await #expect(throws: ConnectionError.notConnected) {
             try await client.cancelSession(id: "s1")
         }
+    }
+
+    // MARK: - conversation change forwarding
+
+    /// Views observe conversation state only through the `ACPClient`
+    /// environment object, so a store change must be forwarded to the client's
+    /// `objectWillChange` or the screen would silently stop re-rendering.
+    @Test func storeChangesAreForwardedThroughTheClientForViews() async {
+        let transport = MockWebSocketTransport()
+        let client = await connectedClient(transport)
+
+        var clientDidChange = false
+        let cancellable = client.objectWillChange.sink { clientDidChange = true }
+        defer { cancellable.cancel() }
+
+        transport.emit(sessionUpdateNotificationJSON(sessionId: "s1", updateJSON: agentChunkJSON("hi"), cursor: 1))
+        let arrived = await waitUntil { client.conversation(for: "s1").cursor == 1 }
+
+        #expect(arrived)
+        #expect(clientDidChange)
     }
 
     // MARK: - disconnect
