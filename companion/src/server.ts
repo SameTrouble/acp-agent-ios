@@ -22,13 +22,22 @@ import {
   type JsonRpcResponse,
 } from "./rpc";
 import { searchFiles } from "./file-search";
+import { browseDir, DirBrowseError } from "./dir-browse";
 import { expandPrompt } from "./prompt-expander";
 
 interface ClientState {
   authenticated: boolean;
 }
 
-const LOCAL_METHODS = new Set(["auth", "initialize", "session.list", "session.resume", "session.end", "files.search"]);
+const LOCAL_METHODS = new Set([
+  "auth",
+  "initialize",
+  "session.list",
+  "session.resume",
+  "session.end",
+  "files.search",
+  "dir.browse",
+]);
 
 // opencode requires mcpServers on session lifecycle requests; inject an empty
 // default so clients don't have to know.
@@ -237,6 +246,10 @@ export class CompanionServer {
       this.handleFilesSearch(ws, id, params);
       return;
     }
+    if (method === "dir.browse") {
+      this.handleDirBrowse(ws, id, params);
+      return;
+    }
     this.send(ws, makeError(id, ErrorCodes.MethodNotFound, `unknown local method ${method}`));
   }
 
@@ -281,7 +294,7 @@ export class CompanionServer {
       try {
         const acpParams = this.normalizeParams("session/load", { sessionId, mcpServers: p.mcpServers });
         const result = await this.acp.request("session/load", acpParams);
-        this.sessions.markActive(sessionId);
+        this.sessions.markResumed(sessionId);
         this.send(ws, makeResponse(id, this.withSessionConfig(sessionId, result)));
       } catch (err) {
         if (err instanceof RpcError) {
@@ -298,7 +311,7 @@ export class CompanionServer {
     const replay = this.events.replay(sessionId, cursor);
 
     if (replay) {
-      this.sessions.markActive(sessionId);
+      this.sessions.markResumed(sessionId);
       this.send(ws, makeResponse(id, this.withSessionConfig(sessionId, {
         sessionId,
         recovery: "replay" satisfies RecoveryMode,
@@ -311,7 +324,7 @@ export class CompanionServer {
     // The cursor is gone from the ring buffer. Fall back to a full snapshot from
     // the agent if it can replay history, otherwise admit the gap to the client.
     if (!this.agentSupportsLoadSession()) {
-      this.sessions.markActive(sessionId);
+      this.sessions.markResumed(sessionId);
       this.send(ws, makeResponse(id, this.withSessionConfig(sessionId, {
         sessionId,
         recovery: "live-only" satisfies RecoveryMode,
@@ -325,7 +338,7 @@ export class CompanionServer {
     try {
       const acpParams = this.normalizeParams("session/load", { sessionId, mcpServers: p.mcpServers });
       const result = await this.acp.request("session/load", acpParams);
-      this.sessions.markActive(sessionId);
+      this.sessions.markResumed(sessionId);
       this.send(ws, makeResponse(id, this.withSessionConfig(sessionId, {
         ...(typeof result === "object" && result !== null ? result : {}),
         sessionId,
@@ -354,6 +367,25 @@ export class CompanionServer {
     const pc = (caps as { promptCapabilities?: unknown }).promptCapabilities;
     if (typeof pc !== "object" || pc === null) return false;
     return (pc as { embeddedContext?: unknown }).embeddedContext === true;
+  }
+
+  /**
+   * One level of the server filesystem for the new-session project picker
+   * (issue #12). No `path` starts the browser at the server's home directory.
+   */
+  private handleDirBrowse(ws: ServerWebSocket<ClientState>, id: string | number, params: unknown): void {
+    const p = (params ?? {}) as Record<string, unknown>;
+    const path = typeof p.path === "string" && p.path.length > 0 ? p.path : undefined;
+    try {
+      this.send(ws, makeResponse(id, browseDir(path)));
+    } catch (err) {
+      if (err instanceof DirBrowseError) {
+        this.sendError(ws, id, ErrorCodes.InvalidParams, err.message);
+        return;
+      }
+      const e = err as Error;
+      this.sendError(ws, id, ErrorCodes.InternalError, e.message);
+    }
   }
 
   private handleFilesSearch(ws: ServerWebSocket<ClientState>, id: string | number, params: unknown): void {
@@ -506,7 +538,9 @@ export class CompanionServer {
         this.cacheSetMode(params);
       } else if (msg.method === "session/prompt") {
         const p = (params ?? {}) as { sessionId?: string };
-        if (p.sessionId) this.sessions.touch(p.sessionId);
+        // Prompting IS continuing the conversation: an ended session comes
+        // back to life here, never on a read-only history resume (issue #12).
+        if (p.sessionId) this.sessions.markActive(p.sessionId);
         this.notifyTurnEnded(params, result, undefined);
       }
       this.send(ws, makeResponse(msg.id!, result));

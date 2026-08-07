@@ -129,6 +129,18 @@ export class SessionManager {
     this.save();
   }
 
+  /**
+   * A resume makes a session live again — except ended ones: viewing history
+   * is read-only, and only a new prompt revives an ended session (issue #12).
+   */
+  markResumed(id: string): void {
+    const s = this.sessions.get(id);
+    if (!s || s.status === "ended") return;
+    s.status = "active";
+    s.lastActiveAt = Date.now();
+    this.save();
+  }
+
   markEnded(id: string): void {
     const s = this.sessions.get(id);
     if (!s) return;

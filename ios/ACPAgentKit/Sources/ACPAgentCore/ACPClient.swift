@@ -32,6 +32,43 @@ public struct FileSearchResponse: Decodable, Equatable, Sendable {
     }
 }
 
+/// One navigable directory in a `dir.browse` listing. Files are not listed —
+/// the browser only picks project roots (issue #12).
+public struct DirectoryEntry: Decodable, Equatable, Sendable {
+    public let name: String
+    public let path: String
+
+    public init(name: String, path: String) {
+        self.name = name
+        self.path = path
+    }
+}
+
+/// One level of the server filesystem. `parent` is nil at the filesystem
+/// root; the client feeds `path`/`parent` back as the next browse request to
+/// navigate level by level.
+public struct DirectoryListing: Decodable, Equatable, Sendable {
+    public let path: String
+    public let parent: String?
+    public let entries: [DirectoryEntry]
+
+    public init(path: String, parent: String?, entries: [DirectoryEntry]) {
+        self.path = path
+        self.parent = parent
+        self.entries = entries
+    }
+}
+
+/// The `session/new` result — only the id is needed client-side; config
+/// options arrive through the resume/conversation flow.
+public struct NewSessionResponse: Decodable, Equatable, Sendable {
+    public let sessionId: String
+
+    public init(sessionId: String) {
+        self.sessionId = sessionId
+    }
+}
+
 @MainActor
 public final class ACPClient: ObservableObject {
     public enum ConnectionState: Equatable, Sendable {
@@ -179,6 +216,20 @@ public final class ACPClient: ObservableObject {
         return list.sessions
     }
 
+    /// Creates a session with the given server directory as its project root
+    /// (issue #12) and refreshes the session list so the new session is
+    /// visible immediately. Returns the new session id.
+    @discardableResult
+    public func createSession(cwd: String) async throws -> String {
+        guard connectionState == .connected else {
+            throw ConnectionError.notConnected
+        }
+        let result = try await rpc.request("session/new", params: ["cwd": AnyCodable(cwd)])
+        let response = try result.decode(NewSessionResponse.self)
+        _ = try? await refreshSessions()
+        return response.sessionId
+    }
+
     // MARK: - Session conversation
 
     /// Resumes a session, replaying any buffered events the client has missed
@@ -244,6 +295,20 @@ public final class ACPClient: ObservableObject {
         ])
         let response = try result.decode(FileSearchResponse.self)
         return response.files
+    }
+
+    // MARK: - Directory browsing (project picker)
+
+    /// Lists one level of the server filesystem via the companion's
+    /// `dir.browse` (issue #12). Without a path the browser starts at the
+    /// server's home directory.
+    public func browseDirectory(path: String? = nil) async throws -> DirectoryListing {
+        guard connectionState == .connected else {
+            throw ConnectionError.notConnected
+        }
+        let params: [String: AnyCodable]? = path.map { ["path": AnyCodable($0)] }
+        let result = try await rpc.request("dir.browse", params: params)
+        return try result.decode(DirectoryListing.self)
     }
 
     // MARK: - Persistence helpers

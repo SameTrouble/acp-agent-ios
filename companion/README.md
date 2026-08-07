@@ -17,6 +17,8 @@ running as an [ACP](https://agentclientprotocol.com) subprocess. Part of the
 - Disconnecting a client does not interrupt the session or the agent subprocess.
 - `files.search` gives clients fuzzy file search scoped to a session's working
   directory, so `@`-mentions can be autocompleted on the device.
+- `dir.browse` lists one level of the server filesystem, so a new session can
+  pick any directory as its project root.
 - `@`-references in a prompt are expanded by the companion before the prompt
   reaches the agent, in whichever form that agent can actually consume.
 
@@ -70,6 +72,20 @@ best-first. Paths are relative to the session's `cwd`. Matching is substring
 first, then subsequence, with basename and prefix hits ranked above deep-path
 hits. `.git`, `node_modules`, `dist`, and similar build/vendor directories are
 skipped, and the walk is bounded so a large repository can't hang the search.
+
+## `dir.browse`
+
+```json
+{ "jsonrpc": "2.0", "id": 3, "method": "dir.browse",
+  "params": { "path": "/Users/me/code" } }
+```
+
+Returns `{ "path": "/Users/me/code", "parent": "/Users/me", "entries": [{ "name": "acp-agent-ios", "path": "/Users/me/code/acp-agent-ios" }, …] }` —
+subdirectories only, sorted case-insensitively. `parent` is `null` at the
+filesystem root. Omitting `path` starts the browser at the server's home
+directory. Clients navigate by feeding a returned `path`/`parent` back as the
+next request's `path`, then create the session with that directory as `cwd`.
+A missing or non-directory `path` answers InvalidParams (`-32602`).
 
 ## Configuration
 
