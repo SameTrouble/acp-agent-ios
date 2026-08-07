@@ -144,4 +144,40 @@ describe("SessionManager", () => {
     expect(sm.list().length).toBe(1);
     rmSync(dir, { recursive: true });
   });
+
+  test("setConfig caches configOptions and survives reload", () => {
+    const dir = makeTmpDir();
+    const path = join(dir, "s.json");
+    const sm1 = new SessionManager(path);
+    sm1.create("sess_1", "/proj/foo");
+    sm1.setConfig("sess_1", {
+      configOptions: [{ id: "model", type: "select", currentValue: "m1" }],
+    });
+    expect(sm1.getConfig("sess_1").configOptions).toEqual([
+      { id: "model", type: "select", currentValue: "m1" },
+    ]);
+
+    const sm2 = new SessionManager(path);
+    sm2.load();
+    expect(sm2.getConfig("sess_1").configOptions).toEqual([
+      { id: "model", type: "select", currentValue: "m1" },
+    ]);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("config_option_update notification refreshes the cache", () => {
+    const dir = makeTmpDir();
+    const sm = new SessionManager(join(dir, "s.json"));
+    sm.create("sess_1", "/a");
+    sm.setConfig("sess_1", { configOptions: [{ id: "model", currentValue: "old" }] });
+    sm.handleNotification("session/update", {
+      sessionId: "sess_1",
+      update: {
+        sessionUpdate: "config_option_update",
+        configOptions: [{ id: "model", currentValue: "new" }],
+      },
+    });
+    expect(sm.getConfig("sess_1").configOptions).toEqual([{ id: "model", currentValue: "new" }]);
+    rmSync(dir, { recursive: true });
+  });
 });

@@ -211,6 +211,14 @@ public final class ACPClient: ObservableObject {
         try await conversationStore.cancelSession(id: sessionId)
     }
 
+    /// Changes a session config option (model, mode, …). Uses
+    /// `session/set_config_option`, or `session/set_mode` when the agent only
+    /// advertised legacy modes. Safe to call while generating (issue #11).
+    @discardableResult
+    public func setConfigOption(sessionId: String, configId: String, value: String) async throws -> [SessionConfigOption] {
+        try await conversationStore.setConfigOption(sessionId: sessionId, configId: configId, value: value)
+    }
+
     /// Responds to a pending permission request with the chosen option. The
     /// card turns terminal and the receipt is sent back to the agent; a second
     /// answer to the same request is a silent no-op.

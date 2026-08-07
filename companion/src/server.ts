@@ -282,7 +282,7 @@ export class CompanionServer {
         const acpParams = this.normalizeParams("session/load", { sessionId, mcpServers: p.mcpServers });
         const result = await this.acp.request("session/load", acpParams);
         this.sessions.markActive(sessionId);
-        this.send(ws, makeResponse(id, result));
+        this.send(ws, makeResponse(id, this.withSessionConfig(sessionId, result)));
       } catch (err) {
         if (err instanceof RpcError) {
           this.sendError(ws, id, err.code, err.message);
@@ -299,12 +299,12 @@ export class CompanionServer {
 
     if (replay) {
       this.sessions.markActive(sessionId);
-      this.send(ws, makeResponse(id, {
+      this.send(ws, makeResponse(id, this.withSessionConfig(sessionId, {
         sessionId,
         recovery: "replay" satisfies RecoveryMode,
         events: replay.events,
         cursor: replay.latestCursor,
-      }));
+      })));
       return;
     }
 
@@ -312,13 +312,13 @@ export class CompanionServer {
     // the agent if it can replay history, otherwise admit the gap to the client.
     if (!this.agentSupportsLoadSession()) {
       this.sessions.markActive(sessionId);
-      this.send(ws, makeResponse(id, {
+      this.send(ws, makeResponse(id, this.withSessionConfig(sessionId, {
         sessionId,
         recovery: "live-only" satisfies RecoveryMode,
         events: [],
         cursor: this.events.latestCursor(sessionId),
         reason: "agent cannot replay session history; resuming from the live stream only",
-      }));
+      })));
       return;
     }
 
@@ -326,12 +326,12 @@ export class CompanionServer {
       const acpParams = this.normalizeParams("session/load", { sessionId, mcpServers: p.mcpServers });
       const result = await this.acp.request("session/load", acpParams);
       this.sessions.markActive(sessionId);
-      this.send(ws, makeResponse(id, {
+      this.send(ws, makeResponse(id, this.withSessionConfig(sessionId, {
         ...(typeof result === "object" && result !== null ? result : {}),
         sessionId,
         recovery: "snapshot" satisfies RecoveryMode,
         cursor: this.events.latestCursor(sessionId),
-      }));
+      })));
     } catch (err) {
       if (err instanceof RpcError) {
         this.sendError(ws, id, err.code, err.message);
@@ -500,6 +500,10 @@ export class CompanionServer {
       const result = await this.acp.request(msg.method, params);
       if (msg.method === "session/new") {
         this.trackNewSession(params, result);
+      } else if (msg.method === "session/set_config_option") {
+        this.cacheSetConfigOption(params, result);
+      } else if (msg.method === "session/set_mode") {
+        this.cacheSetMode(params);
       } else if (msg.method === "session/prompt") {
         const p = (params ?? {}) as { sessionId?: string };
         if (p.sessionId) this.sessions.touch(p.sessionId);
@@ -521,10 +525,62 @@ export class CompanionServer {
 
   private trackNewSession(params: unknown, result: unknown): void {
     const p = (params ?? {}) as { cwd?: string };
-    const r = (result ?? {}) as { sessionId?: string };
+    const r = (result ?? {}) as {
+      sessionId?: string;
+      configOptions?: unknown;
+      modes?: unknown;
+    };
     if (r.sessionId) {
       this.sessions.create(r.sessionId, p.cwd ?? "/");
+      const patch: { configOptions?: unknown; modes?: unknown } = {};
+      if (r.configOptions !== undefined) patch.configOptions = r.configOptions;
+      if (r.modes !== undefined) patch.modes = r.modes;
+      if (Object.keys(patch).length > 0) {
+        this.sessions.setConfig(r.sessionId, patch);
+      }
     }
+  }
+
+  private cacheSetConfigOption(params: unknown, result: unknown): void {
+    const p = (params ?? {}) as { sessionId?: string };
+    const r = (result ?? {}) as { configOptions?: unknown };
+    if (typeof p.sessionId === "string" && r.configOptions !== undefined) {
+      this.sessions.setConfig(p.sessionId, { configOptions: r.configOptions });
+    }
+  }
+
+  private cacheSetMode(params: unknown): void {
+    const p = (params ?? {}) as { sessionId?: string; modeId?: string };
+    if (typeof p.sessionId !== "string" || typeof p.modeId !== "string") return;
+    const prev = this.sessions.getConfig(p.sessionId);
+    const modes = prev.modes;
+    if (typeof modes === "object" && modes !== null) {
+      this.sessions.setConfig(p.sessionId, {
+        modes: { ...(modes as Record<string, unknown>), currentModeId: p.modeId },
+      });
+    }
+  }
+
+  /** Merges cached `configOptions` / `modes` into a resume payload. */
+  private withSessionConfig(sessionId: string, result: unknown): unknown {
+    const base = typeof result === "object" && result !== null ? (result as Record<string, unknown>) : {};
+    const cached = this.sessions.getConfig(sessionId);
+    const out: Record<string, unknown> = { ...base };
+    // Prefer live agent fields on the load/snapshot result; otherwise use cache.
+    if (out.configOptions === undefined && cached.configOptions !== undefined) {
+      out.configOptions = cached.configOptions;
+    }
+    if (out.modes === undefined && cached.modes !== undefined) {
+      out.modes = cached.modes;
+    }
+    // Refresh cache when the agent returned fresher values on load.
+    if (out.configOptions !== undefined || out.modes !== undefined) {
+      this.sessions.setConfig(sessionId, {
+        ...(out.configOptions !== undefined ? { configOptions: out.configOptions } : {}),
+        ...(out.modes !== undefined ? { modes: out.modes } : {}),
+      });
+    }
+    return out;
   }
 
   private async expandParams(method: string, params: unknown): Promise<unknown> {

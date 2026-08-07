@@ -59,7 +59,38 @@ function handleRequest(msg: { id: number | string; method: string; params?: unkn
       const p = (msg.params ?? {}) as { cwd?: string; mcpServers?: unknown };
       const sessionId = SESSION_PREFIX + Math.random().toString(16).slice(2, 10);
       sessions.set(sessionId, { cwd: p.cwd ?? "/" });
-      return encodeFrame({ jsonrpc: "2.0", id: msg.id, result: { sessionId, mcpServers: p.mcpServers } });
+      return encodeFrame({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: {
+          sessionId,
+          mcpServers: p.mcpServers,
+          configOptions: [
+            {
+              id: "model",
+              name: "Model",
+              category: "model",
+              type: "select",
+              currentValue: "model-1",
+              options: [
+                { value: "model-1", name: "Model 1" },
+                { value: "model-2", name: "Model 2" },
+              ],
+            },
+            {
+              id: "mode",
+              name: "Mode",
+              category: "mode",
+              type: "select",
+              currentValue: "build",
+              options: [
+                { value: "build", name: "Build" },
+                { value: "plan", name: "Plan" },
+              ],
+            },
+          ],
+        },
+      });
     }
     case "session/load": {
       const p = (msg.params ?? {}) as { sessionId?: string; mcpServers?: unknown };
@@ -68,6 +99,45 @@ function handleRequest(msg: { id: number | string; method: string; params?: unkn
         return encodeFrame({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "session not found" } });
       }
       return encodeFrame({ jsonrpc: "2.0", id: msg.id, result: { sessionId, mcpServers: p.mcpServers } });
+    }
+    case "session/set_config_option": {
+      const p = (msg.params ?? {}) as { sessionId?: string; configId?: string; value?: string };
+      const sessionId = p.sessionId;
+      if (!sessionId || !sessions.has(sessionId)) {
+        return encodeFrame({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "session not found" } });
+      }
+      const modelValue = p.configId === "model" && typeof p.value === "string" ? p.value : "model-1";
+      const modeValue = p.configId === "mode" && typeof p.value === "string" ? p.value : "build";
+      return encodeFrame({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: {
+          configOptions: [
+            {
+              id: "model",
+              name: "Model",
+              category: "model",
+              type: "select",
+              currentValue: modelValue,
+              options: [
+                { value: "model-1", name: "Model 1" },
+                { value: "model-2", name: "Model 2" },
+              ],
+            },
+            {
+              id: "mode",
+              name: "Mode",
+              category: "mode",
+              type: "select",
+              currentValue: modeValue,
+              options: [
+                { value: "build", name: "Build" },
+                { value: "plan", name: "Plan" },
+              ],
+            },
+          ],
+        },
+      });
     }
     case "session/prompt": {
       const p = (msg.params ?? {}) as { sessionId?: string; prompt?: unknown };

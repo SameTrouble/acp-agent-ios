@@ -45,22 +45,33 @@ public struct BufferedSessionEvent: Decodable, Equatable, Sendable {
 
 public struct SessionResumeResponse: Decodable, Equatable, Sendable {
     public let sessionId: String
-    public let recovery: RecoveryMode
+    public let recovery: RecoveryMode?
     public let events: [BufferedSessionEvent]
     public let cursor: Int?
     public let reason: String?
+    /// Cached / agent-advertised config options for this session (issue #11).
+    public let configOptions: [SessionConfigOption]
+    /// Legacy modes fallback when the agent has no `configOptions`.
+    public let modes: SessionModeState?
 
     enum CodingKeys: String, CodingKey {
-        case sessionId, recovery, events, cursor, reason
+        case sessionId, recovery, events, cursor, reason, configOptions, modes
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         sessionId = try container.decode(String.self, forKey: .sessionId)
-        recovery = try container.decode(RecoveryMode.self, forKey: .recovery)
+        recovery = try container.decodeIfPresent(RecoveryMode.self, forKey: .recovery)
         events = try container.decodeIfPresent([BufferedSessionEvent].self, forKey: .events) ?? []
         cursor = try container.decodeIfPresent(Int.self, forKey: .cursor)
         reason = try container.decodeIfPresent(String.self, forKey: .reason)
+        if container.contains(.configOptions) {
+            let list = try container.decode(SessionConfigOptionList.self, forKey: .configOptions)
+            configOptions = list.options
+        } else {
+            configOptions = []
+        }
+        modes = try container.decodeIfPresent(SessionModeState.self, forKey: .modes)
     }
 }
 
@@ -139,6 +150,11 @@ public struct SessionConversation: Equatable, Sendable {
     /// wholesale on every `available_commands_update` (ADR-005). Not part of
     /// the transcript — it feeds the input bar's `/` menu.
     public var availableCommands: [AvailableCommand] = []
+    /// Session-level config options (`configOptions` / `config_option_update`).
+    /// Prefer these over `modes` when both exist (issue #11).
+    public var configOptions: [SessionConfigOption] = []
+    /// Legacy modes state. Used only when `configOptions` is empty.
+    public var modes: SessionModeState?
 
     public init() {}
 
@@ -148,15 +164,93 @@ public struct SessionConversation: Equatable, Sendable {
     /// Cancel only makes sense while the agent still has work to stop.
     public var canCancel: Bool { isSending || transcript.isGenerating }
 
+    /// Select options the UI should render, in agent priority order. Falls
+    /// back to a synthetic mode selector when only legacy `modes` exist.
+    public var selectableConfigOptions: [SessionConfigOption] {
+        Self.selectableConfigOptions(configOptions: configOptions, modes: modes)
+    }
+
+    /// Short label for the input-bar chip (prefer `category == "model"`).
+    public var configChipSummary: String? {
+        Self.chipSummary(configOptions: configOptions, modes: modes)
+    }
+
+    public static func selectableConfigOptions(
+        configOptions: [SessionConfigOption],
+        modes: SessionModeState?
+    ) -> [SessionConfigOption] {
+        if !configOptions.isEmpty {
+            return configOptions.filter { $0.type == .select }
+        }
+        if let modes {
+            return [modes.asSelectConfigOption()]
+        }
+        return []
+    }
+
+    public static func chipSummary(
+        configOptions: [SessionConfigOption],
+        modes: SessionModeState?
+    ) -> String? {
+        let selectable = selectableConfigOptions(configOptions: configOptions, modes: modes)
+        guard !selectable.isEmpty else { return nil }
+        if let model = selectable.first(where: { $0.category == "model" }) {
+            return model.currentDisplayName
+        }
+        return selectable[0].currentDisplayName
+    }
+
     mutating func apply(_ update: SessionUpdate, cursor incoming: Int?) {
         guard shouldApply(cursor: incoming) else { return }
         switch update {
         case .availableCommands(let commands):
             availableCommands = commands
+        case .configOptions(let options):
+            configOptions = options
+        case .currentMode(let modeId):
+            applyCurrentMode(modeId)
         default:
             transcript.apply(update)
         }
         advanceCursor(to: incoming)
+    }
+
+    /// Seeds config state from a resume / load response (companion cache or
+    /// agent session setup fields).
+    mutating func applySessionConfig(
+        configOptions: [SessionConfigOption],
+        modes: SessionModeState?
+    ) {
+        if !configOptions.isEmpty {
+            self.configOptions = configOptions
+        }
+        if let modes {
+            self.modes = modes
+        }
+    }
+
+    mutating func replaceConfigOptions(_ options: [SessionConfigOption]) {
+        configOptions = options
+    }
+
+    mutating func applyCurrentMode(_ modeId: String) {
+        if var modes {
+            modes.currentModeId = modeId
+            self.modes = modes
+        }
+        // Keep a matching mode-category config option in sync when present.
+        if let index = configOptions.firstIndex(where: { $0.category == "mode" || $0.id == "mode" }) {
+            let option = configOptions[index]
+            configOptions[index] = SessionConfigOption(
+                id: option.id,
+                name: option.name,
+                description: option.description,
+                category: option.category,
+                type: option.type,
+                currentValue: .string(modeId),
+                options: option.options
+            )
+        }
     }
 
     /// Applies a replayed or live permission request. Request frames share the

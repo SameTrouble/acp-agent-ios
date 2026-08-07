@@ -201,6 +201,159 @@ import Testing
         #expect(conversation.cursor == 2)
     }
 
+    @Test func applyConfigOptionUpdateReplacesOptionsOutsideTranscript() {
+        let store = makeStore(MockWebSocketTransport())
+
+        store.applySessionUpdate(
+            SessionUpdateNotification(
+                sessionId: "s1",
+                update: .configOptions([
+                    SessionConfigOption(
+                        id: "model", name: "Model", category: "model", type: .select,
+                        currentValue: .string("m1"),
+                        options: [SessionConfigOptionValue(value: "m1", name: "M1")]
+                    ),
+                ])
+            ),
+            cursor: 1
+        )
+        store.applySessionUpdate(
+            SessionUpdateNotification(
+                sessionId: "s1",
+                update: .configOptions([
+                    SessionConfigOption(
+                        id: "model", name: "Model", category: "model", type: .select,
+                        currentValue: .string("m2"),
+                        options: [
+                            SessionConfigOptionValue(value: "m1", name: "M1"),
+                            SessionConfigOptionValue(value: "m2", name: "M2"),
+                        ]
+                    ),
+                ])
+            ),
+            cursor: 2
+        )
+
+        let conversation = store.conversation(for: "s1")
+        #expect(conversation.configChipSummary == "M2")
+        #expect(conversation.transcript.items.isEmpty)
+        #expect(conversation.cursor == 2)
+    }
+
+    @Test func resumeSeedsConfigOptionsFromResponse() async throws {
+        let transport = MockWebSocketTransport()
+        transport.responders["session.resume"] = { id, _ in
+            successResponse(id: id, resultJSON: #"""
+            {"sessionId":"s1","recovery":"replay","events":[],"cursor":0,"configOptions":[
+              {"id":"model","name":"Model","category":"model","type":"select","currentValue":"m1","options":[{"value":"m1","name":"Claude"}]}
+            ]}
+            """#)
+        }
+        let store = makeStore(transport)
+
+        try await store.resumeSession(id: "s1")
+
+        #expect(store.conversation(for: "s1").configChipSummary == "Claude")
+    }
+
+    @Test func setConfigOptionReplacesLocalStateFromAgentResponse() async throws {
+        let transport = MockWebSocketTransport()
+        transport.responders["session/set_config_option"] = { id, params in
+            #expect(params?["configId"]?.value.base as? String == "model")
+            #expect(params?["value"]?.value.base as? String == "m2")
+            return successResponse(id: id, resultJSON: #"""
+            {"configOptions":[
+              {"id":"model","name":"Model","category":"model","type":"select","currentValue":"m2","options":[
+                {"value":"m1","name":"M1"},{"value":"m2","name":"M2"}
+              ]}
+            ]}
+            """#)
+        }
+        let store = makeStore(transport)
+        store.applySessionUpdate(
+            SessionUpdateNotification(
+                sessionId: "s1",
+                update: .configOptions([
+                    SessionConfigOption(
+                        id: "model", name: "Model", category: "model", type: .select,
+                        currentValue: .string("m1"),
+                        options: [SessionConfigOptionValue(value: "m1", name: "M1")]
+                    ),
+                ])
+            ),
+            cursor: 1
+        )
+
+        let options = try await store.setConfigOption(sessionId: "s1", configId: "model", value: "m2")
+
+        #expect(options.first?.currentDisplayName == "M2")
+        #expect(store.conversation(for: "s1").configChipSummary == "M2")
+        #expect(transport.methodsSent() == ["session/set_config_option"])
+    }
+
+    @Test func setConfigOptionFallsBackToSetModeWhenOnlyModesExist() async throws {
+        let transport = MockWebSocketTransport()
+        transport.responders["session.resume"] = { id, _ in
+            successResponse(id: id, resultJSON: #"""
+            {"sessionId":"s1","recovery":"replay","events":[],"modes":{
+              "currentModeId":"ask",
+              "availableModes":[{"id":"ask","name":"Ask"},{"id":"code","name":"Code"}]
+            }}
+            """#)
+        }
+        transport.responders["session/set_mode"] = { id, params in
+            #expect(params?["modeId"]?.value.base as? String == "code")
+            return successResponse(id: id, resultJSON: "{}")
+        }
+        let store = makeStore(transport)
+        try await store.resumeSession(id: "s1")
+
+        _ = try await store.setConfigOption(sessionId: "s1", configId: "mode", value: "code")
+
+        #expect(store.conversation(for: "s1").configChipSummary == "Code")
+        #expect(transport.methodsSent().contains("session/set_mode"))
+        #expect(!transport.methodsSent().contains("session/set_config_option"))
+    }
+
+    @Test func setConfigOptionAllowedWhileSending() async throws {
+        let transport = MockWebSocketTransport()
+        transport.deferredMethods = ["session/prompt"]
+        transport.responders["session/set_config_option"] = { id, _ in
+            successResponse(id: id, resultJSON: #"""
+            {"configOptions":[
+              {"id":"model","name":"Model","category":"model","type":"select","currentValue":"m2","options":[
+                {"value":"m1","name":"M1"},{"value":"m2","name":"M2"}
+              ]}
+            ]}
+            """#)
+        }
+        let store = makeStore(transport)
+        store.applySessionUpdate(
+            SessionUpdateNotification(
+                sessionId: "s1",
+                update: .configOptions([
+                    SessionConfigOption(
+                        id: "model", name: "Model", category: "model", type: .select,
+                        currentValue: .string("m1"),
+                        options: [SessionConfigOptionValue(value: "m1", name: "M1")]
+                    ),
+                ])
+            ),
+            cursor: 1
+        )
+
+        async let prompt: String? = store.sendPrompt(sessionId: "s1", text: "hi")
+        // Let the prompt start so isSending flips true.
+        await Task.yield()
+        #expect(store.conversation(for: "s1").isSending)
+
+        _ = try await store.setConfigOption(sessionId: "s1", configId: "model", value: "m2")
+        #expect(store.conversation(for: "s1").configChipSummary == "M2")
+
+        transport.release("session/prompt", resultJSON: #"{"stopReason":"end_turn"}"#)
+        _ = try await prompt
+    }
+
     // MARK: - cancel
 
     @Test func cancelSendsNotificationNotRequest() async throws {
