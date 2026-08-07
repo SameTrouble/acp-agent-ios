@@ -51,6 +51,28 @@ describe("SessionManager", () => {
     rmSync(dir, { recursive: true });
   });
 
+  test("markResumed revives an interrupted session", () => {
+    const dir = makeTmpDir();
+    const sm = new SessionManager(join(dir, "s.json"));
+    sm.create("sess_1", "/a");
+    sm.markInterrupted("sess_1");
+    sm.markResumed("sess_1");
+    expect(sm.get("sess_1")?.status).toBe("active");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("markResumed keeps an ended session ended", () => {
+    const dir = makeTmpDir();
+    const sm = new SessionManager(join(dir, "s.json"));
+    sm.create("sess_1", "/a");
+    sm.markEnded("sess_1");
+    const before = sm.get("sess_1")!.lastActiveAt;
+    sm.markResumed("sess_1");
+    expect(sm.get("sess_1")?.status).toBe("ended");
+    expect(sm.get("sess_1")?.lastActiveAt).toBe(before);
+    rmSync(dir, { recursive: true });
+  });
+
   test("markAllActiveInterrupted marks active sessions as interrupted", () => {
     const dir = makeTmpDir();
     const sm = new SessionManager(join(dir, "s.json"));

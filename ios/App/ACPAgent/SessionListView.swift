@@ -5,9 +5,28 @@ struct SessionListView: View {
     @EnvironmentObject var client: ACPClient
     @State private var isRefreshing = false
     @State private var refreshError: String?
+    @State private var showingNewSession = false
+    /// Programmatic navigation path so a freshly created session (issue #12)
+    /// can push straight into its detail view.
+    @State private var navigationPath: [String] = []
+    /// The id a closed new-session sheet created; pushed from `onDismiss` so
+    /// the navigation never races the sheet's dismissal.
+    @State private var createdSessionId: String?
+
+    /// Sessions still in play, grouped by project. Ended sessions live in
+    /// their own history group instead of cluttering the active projects.
+    private var activeGroups: [ProjectGroup] {
+        client.sessions.filter { $0.status != .ended }.groupedByProject()
+    }
+
+    private var endedSessions: [SessionInfo] {
+        client.sessions
+            .filter { $0.status == .ended }
+            .sorted { $0.lastActiveAt > $1.lastActiveAt }
+    }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             Group {
                 if client.sessions.isEmpty {
                     ContentUnavailableView {
@@ -15,13 +34,16 @@ struct SessionListView: View {
                     } description: {
                         Text("Start a new session from your agent to see it here.")
                     } actions: {
+                        Button("New Session") {
+                            showingNewSession = true
+                        }
                         Button("Refresh") {
                             Task { await refresh() }
                         }
                     }
                 } else {
                     List {
-                        ForEach(client.sessions.groupedByProject()) { group in
+                        ForEach(activeGroups) { group in
                             Section {
                                 ForEach(group.sessions) { session in
                                     NavigationLink(value: session.id) {
@@ -40,6 +62,15 @@ struct SessionListView: View {
                                 .textCase(nil)
                             }
                         }
+                        if !endedSessions.isEmpty {
+                            Section("Ended") {
+                                ForEach(endedSessions) { session in
+                                    NavigationLink(value: session.id) {
+                                        SessionRow(session: session)
+                                    }
+                                }
+                            }
+                        }
                     }
                     .listStyle(.insetGrouped)
                     .navigationDestination(for: String.self) { sessionId in
@@ -49,6 +80,14 @@ struct SessionListView: View {
             }
             .navigationTitle("Sessions")
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingNewSession = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("New Session")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Refresh") {
@@ -70,6 +109,16 @@ struct SessionListView: View {
             }
             .refreshable {
                 await refresh()
+            }
+            .sheet(isPresented: $showingNewSession, onDismiss: {
+                if let sessionId = createdSessionId {
+                    createdSessionId = nil
+                    navigationPath.append(sessionId)
+                }
+            }) {
+                NewSessionView { sessionId in
+                    createdSessionId = sessionId
+                }
             }
             .overlay(alignment: .bottom) {
                 if let error = refreshError {

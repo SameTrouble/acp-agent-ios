@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { AcpClient, type InitializeResult } from "../src/acp";
 import type { AgentConfig, CompanionConfig } from "../src/config";
@@ -73,6 +73,16 @@ function collectMessages(q: QueuedSocket, count: number): Promise<unknown[]> {
     return msgs;
   };
   return drain();
+}
+
+/** Opens a socket and completes the auth handshake with a valid token. */
+async function authenticate(): Promise<{ ws: WebSocket; q: QueuedSocket }> {
+  const ws = connect();
+  await waitOpen(ws);
+  const q = makeQueue(ws);
+  send(ws, { jsonrpc: "2.0", id: 1, method: "auth", params: { token: "good-token" } });
+  await nextMessage(q);
+  return { ws, q };
 }
 
 beforeAll(async () => {
@@ -155,15 +165,6 @@ describe("session lifecycle passthrough", () => {
   });
 
   test("two clients both receive the same session/update stream", async () => {
-    const authenticate = async () => {
-      const ws = connect();
-      await waitOpen(ws);
-      const q = makeQueue(ws);
-      send(ws, { jsonrpc: "2.0", id: 1, method: "auth", params: { token: "good-token" } });
-      await nextMessage(q);
-      return { ws, q };
-    };
-
     const { ws: wsA, q: qA } = await authenticate();
     const { ws: wsB, q: qB } = await authenticate();
 
@@ -308,6 +309,50 @@ describe("session.resume", () => {
     expect(listed?.status).toBe("active");
     ws.close();
   });
+
+  test("resume keeps an ended session ended (read-only history view)", async () => {
+    const { ws, q } = await authenticate();
+
+    send(ws, { jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: "/proj/history" } });
+    const newMsg = (await nextMessage(q)) as { result?: { sessionId: string } };
+    const sessionId = newMsg.result!.sessionId;
+    sessions.markEnded(sessionId);
+
+    send(ws, { jsonrpc: "2.0", id: 3, method: "session.resume", params: { sessionId } });
+    const resumeMsg = (await nextMessage(q)) as { result?: { sessionId: string } };
+    expect(resumeMsg.result?.sessionId).toBe(sessionId);
+
+    // Viewing history must not revive the session (issue #12).
+    expect(sessions.get(sessionId)?.status).toBe("ended");
+    ws.close();
+  });
+
+  test("prompting an ended session revives it to active", async () => {
+    const { ws, q } = await authenticate();
+
+    send(ws, { jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: "/proj/revive" } });
+    const newMsg = (await nextMessage(q)) as { result?: { sessionId: string } };
+    const sessionId = newMsg.result!.sessionId;
+    sessions.markEnded(sessionId);
+
+    send(ws, { jsonrpc: "2.0", id: 3, method: "session.resume", params: { sessionId } });
+    await nextMessage(q);
+    expect(sessions.get(sessionId)?.status).toBe("ended");
+
+    send(ws, {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "text", text: "continuing" }] },
+    });
+    const msgs = await collectMessages(q, 3);
+    const response = msgs.find((m) => "result" in (m as { result?: unknown }));
+    expect((response as { result?: { stopReason: string } }).result?.stopReason).toBe("end_turn");
+
+    // Sending a new prompt IS continuing the conversation (issue #12).
+    expect(sessions.get(sessionId)?.status).toBe("active");
+    ws.close();
+  }, 10000);
 
   test("returns error for unknown sessionId", async () => {
     const ws = connect();
@@ -498,21 +543,76 @@ describe("session.end", () => {
   });
 });
 
-describe("agent request relay (permission)", () => {
-  interface Authed {
-    ws: WebSocket;
-    q: QueuedSocket;
+describe("dir.browse", () => {
+  interface DirBrowseResult {
+    result?: {
+      path: string;
+      parent: string | null;
+      entries: Array<{ name: string; path: string }>;
+    };
+    error?: { code: number; message: string };
+    id: number;
   }
 
-  const authenticate = async (): Promise<Authed> => {
+  test("lists one level of an existing directory", async () => {
+    const root = join(tmpDir, "browse");
+    mkdirSync(join(root, "proj-one"), { recursive: true });
+    mkdirSync(join(root, "proj-two"), { recursive: true });
+
+    const { ws, q } = await authenticate();
+    send(ws, { jsonrpc: "2.0", id: 2, method: "dir.browse", params: { path: root } });
+    const msg = (await nextMessage(q)) as DirBrowseResult;
+    expect(msg.result?.path).toBe(root);
+    expect(msg.result?.parent).toBe(tmpDir);
+    expect(msg.result?.entries.map((e) => e.name)).toEqual(["proj-one", "proj-two"]);
+    expect(msg.result?.entries[0]?.path).toBe(join(root, "proj-one"));
+    ws.close();
+  });
+
+  test("navigates up via the returned parent path", async () => {
+    const root = join(tmpDir, "browse");
+    const { ws, q } = await authenticate();
+    send(ws, { jsonrpc: "2.0", id: 2, method: "dir.browse", params: { path: join(root, "proj-one") } });
+    const down = (await nextMessage(q)) as DirBrowseResult;
+    expect(down.result?.parent).toBe(root);
+
+    send(ws, { jsonrpc: "2.0", id: 3, method: "dir.browse", params: { path: down.result?.parent } });
+    const up = (await nextMessage(q)) as DirBrowseResult;
+    expect(up.result?.path).toBe(root);
+    expect(up.result?.entries.some((e) => e.name === "proj-two")).toBe(true);
+    ws.close();
+  });
+
+  test("omitting path starts at the home directory", async () => {
+    const { ws, q } = await authenticate();
+    send(ws, { jsonrpc: "2.0", id: 2, method: "dir.browse" });
+    const msg = (await nextMessage(q)) as DirBrowseResult;
+    expect(msg.error).toBeUndefined();
+    expect(typeof msg.result?.path).toBe("string");
+    expect(msg.result?.path.length).toBeGreaterThan(0);
+    ws.close();
+  });
+
+  test("returns InvalidParams for a missing path", async () => {
+    const { ws, q } = await authenticate();
+    send(ws, { jsonrpc: "2.0", id: 2, method: "dir.browse", params: { path: "/nonexistent/browse-xyz" } });
+    const msg = (await nextMessage(q)) as DirBrowseResult;
+    expect(msg.error?.code).toBe(-32602);
+    ws.close();
+  });
+
+  test("requires authentication", async () => {
     const ws = connect();
     await waitOpen(ws);
     const q = makeQueue(ws);
-    send(ws, { jsonrpc: "2.0", id: 1, method: "auth", params: { token: "good-token" } });
-    await nextMessage(q);
-    return { ws, q };
-  };
+    send(ws, { jsonrpc: "2.0", id: 1, method: "dir.browse", params: { path: "/" } });
+    const msg = (await nextMessage(q)) as DirBrowseResult;
+    expect(msg.error?.code).toBe(-32001);
+    ws.close();
+  });
+});
 
+describe("agent request relay (permission)", () => {
   interface PermissionRequestFrame {
     id: number | string;
     method: string;

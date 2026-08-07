@@ -192,4 +192,108 @@ import Testing
             Issue.record("Wrong error")
         }
     }
+
+    // MARK: - Directory browsing (issue #12)
+
+    @Test func browseDirectoryDecodesListingAndPassesPath() async throws {
+        let transport = MockWebSocketTransport()
+        let endpoint = ServerEndpoint(host: "localhost", port: 8787)
+
+        transport.responders["auth"] = { id, _ in
+            successResponse(id: id, resultJSON: #"{"ok":true}"#)
+        }
+        transport.responders["dir.browse"] = { id, _ in
+            successResponse(
+                id: id,
+                resultJSON: #"{"path":"/Users/me/code","parent":"/Users/me","entries":[{"name":"acp-agent-ios","path":"/Users/me/code/acp-agent-ios"},{"name":"other","path":"/Users/me/code/other"}]}"#
+            )
+        }
+
+        let client = ACPClient(transport: transport, tokenStore: InMemoryTokenStore())
+        _ = await client.connect(endpoint: endpoint, token: "tok")
+
+        let listing = try await client.browseDirectory(path: "/Users/me/code")
+        #expect(listing.path == "/Users/me/code")
+        #expect(listing.parent == "/Users/me")
+        #expect(listing.entries.count == 2)
+        #expect(listing.entries[0].name == "acp-agent-ios")
+        #expect(listing.entries[0].path == "/Users/me/code/acp-agent-ios")
+
+        let params = transport.sentRequests().first { $0.method == "dir.browse" }?.params
+        #expect(params?["path"]?.value.base as? String == "/Users/me/code")
+    }
+
+    @Test func browseDirectoryWithoutPathOmitsParams() async throws {
+        let transport = MockWebSocketTransport()
+        let endpoint = ServerEndpoint(host: "localhost", port: 8787)
+
+        transport.responders["auth"] = { id, _ in
+            successResponse(id: id, resultJSON: #"{"ok":true}"#)
+        }
+        transport.responders["dir.browse"] = { id, _ in
+            successResponse(id: id, resultJSON: #"{"path":"/Users/me","parent":"/Users","entries":[]}"#)
+        }
+
+        let client = ACPClient(transport: transport, tokenStore: InMemoryTokenStore())
+        _ = await client.connect(endpoint: endpoint, token: "tok")
+
+        let listing = try await client.browseDirectory()
+        #expect(listing.path == "/Users/me")
+        #expect(listing.entries.isEmpty)
+
+        let request = transport.sentRequests().first { $0.method == "dir.browse" }
+        #expect(request?.params == nil)
+    }
+
+    @Test func browseDirectoryDecodesNullParentAtRoot() throws {
+        let json = #"{"path":"/","parent":null,"entries":[]}"#
+        let listing = try JSONDecoder().decode(DirectoryListing.self, from: Data(json.utf8))
+        #expect(listing.parent == nil)
+        #expect(listing.path == "/")
+    }
+
+    @Test func browseDirectoryWhenDisconnectedThrowsNotConnected() async {
+        let client = ACPClient(transport: MockWebSocketTransport(), tokenStore: InMemoryTokenStore())
+        await #expect(throws: ConnectionError.notConnected) {
+            _ = try await client.browseDirectory(path: "/")
+        }
+    }
+
+    // MARK: - Session creation (issue #12)
+
+    @Test func createSessionSendsCwdAndRefreshesList() async throws {
+        let transport = MockWebSocketTransport()
+        let endpoint = ServerEndpoint(host: "localhost", port: 8787)
+
+        transport.responders["auth"] = { id, _ in
+            successResponse(id: id, resultJSON: #"{"ok":true}"#)
+        }
+        transport.responders["session/new"] = { id, params in
+            let cwd = params?["cwd"]?.value.base as? String ?? ""
+            return successResponse(id: id, resultJSON: #"{"sessionId":"sess_new","cwd":"\#(cwd)"}"#)
+        }
+        transport.responders["session.list"] = { id, _ in
+            successResponse(id: id, resultJSON: #"{"sessions":[\#(sessionJSON(id: "sess_new", cwd: "/proj/new"))]}"#)
+        }
+
+        let client = ACPClient(transport: transport, tokenStore: InMemoryTokenStore())
+        _ = await client.connect(endpoint: endpoint, token: "tok")
+
+        let sessionId = try await client.createSession(cwd: "/proj/new")
+        #expect(sessionId == "sess_new")
+
+        let params = transport.sentRequests().first { $0.method == "session/new" }?.params
+        #expect(params?["cwd"]?.value.base as? String == "/proj/new")
+
+        // The session list is refreshed so the new session is visible at once.
+        #expect(transport.methodsSent().contains("session.list"))
+        #expect(client.sessions.first?.id == "sess_new")
+    }
+
+    @Test func createSessionWhenDisconnectedThrowsNotConnected() async {
+        let client = ACPClient(transport: MockWebSocketTransport(), tokenStore: InMemoryTokenStore())
+        await #expect(throws: ConnectionError.notConnected) {
+            _ = try await client.createSession(cwd: "/proj/x")
+        }
+    }
 }
