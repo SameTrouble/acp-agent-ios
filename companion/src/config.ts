@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { DEFAULT_BARK_URL, type BarkConfig } from "./bark";
+
 export interface CompanionConfig {
   host: string;
   port: number;
@@ -5,14 +8,13 @@ export interface CompanionConfig {
   agent: AgentConfig;
   sessionStorePath: string;
   eventBufferCapacity: number;
+  bark?: BarkConfig;
 }
 
 export interface AgentConfig {
   command: string;
   args: string[];
 }
-
-import { readFileSync } from "node:fs";
 
 const DEFAULT_CONFIG: CompanionConfig = {
   host: "0.0.0.0",
@@ -80,8 +82,9 @@ export function parseConfig(raw: unknown): CompanionConfig {
     ? obj.sessionStorePath
     : defaultSessionStorePath();
   const eventBufferCapacity = parseEventBufferCapacity(obj.eventBufferCapacity);
+  const bark = parseBarkConfig(obj.bark);
 
-  return { host, port, tokens, agent, sessionStorePath, eventBufferCapacity };
+  return { host, port, tokens, agent, sessionStorePath, eventBufferCapacity, ...(bark ? { bark } : {}) };
 }
 
 function parseEventBufferCapacity(value: unknown): number {
@@ -90,6 +93,48 @@ function parseEventBufferCapacity(value: unknown): number {
     throw new Error(
       `config "eventBufferCapacity" must be a positive integer, got ${JSON.stringify(value)}`,
     );
+  }
+  return value;
+}
+
+/**
+ * Parses the optional `bark` section. An absent section or an empty device
+ * key disables notifications; the per-trigger switches default to on once a
+ * device key is present (explicit opt-in happens via the key itself).
+ */
+function parseBarkConfig(value: unknown): BarkConfig | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null) {
+    throw new Error('config "bark" must be an object');
+  }
+  const obj = value as Record<string, unknown>;
+  const deviceKey = parseBarkDeviceKey(obj.deviceKey);
+  if (deviceKey.length === 0) return undefined;
+  const url = parseBarkUrl(obj.url);
+  const notifyOnApproval = parseBarkSwitch(obj.notifyOnApproval, "notifyOnApproval");
+  const notifyOnSessionEnd = parseBarkSwitch(obj.notifyOnSessionEnd, "notifyOnSessionEnd");
+  return { deviceKey, url, notifyOnApproval, notifyOnSessionEnd };
+}
+
+function parseBarkDeviceKey(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error('config "bark.deviceKey" must be a string');
+  }
+  return value;
+}
+
+function parseBarkUrl(value: unknown): string {
+  if (value === undefined) return DEFAULT_BARK_URL;
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error('config "bark.url" must be a non-empty string');
+  }
+  return value;
+}
+
+function parseBarkSwitch(value: unknown, name: string): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "boolean") {
+    throw new Error(`config "bark.${name}" must be a boolean`);
   }
   return value;
 }

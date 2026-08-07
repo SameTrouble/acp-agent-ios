@@ -6,5 +6,11 @@
     "command": "opencode",
     "args": ["acp"]
   },
-  "eventBufferCapacity": 1000
+  "eventBufferCapacity": 1000,
+  "bark": {
+    "deviceKey": "replace-with-your-bark-device-key",
+    "url": "https://api.day.app",
+    "notifyOnApproval": true,
+    "notifyOnSessionEnd": true
+  }
 }
