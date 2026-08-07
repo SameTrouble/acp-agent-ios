@@ -81,12 +81,36 @@ Config lives at `$XDG_CONFIG_HOME/acp-agent/companion.json` (defaults to
   "host": "0.0.0.0",
   "port": 8787,
   "tokens": ["replace-me-with-a-real-token"],
-  "agent": { "command": "opencode", "args": ["acp"] }
+  "agent": { "command": "opencode", "args": ["acp"] },
+  "bark": {
+    "deviceKey": "replace-with-your-bark-device-key",
+    "url": "https://api.day.app",
+    "notifyOnApproval": true,
+    "notifyOnSessionEnd": true
+  }
 }
 ```
 
 `tokens` is a non-empty array of client tokens. `agent.command`/`agent.args`
 override the agent process (useful for testing with a mock).
+
+### Bark push notifications
+
+When a `bark.deviceKey` is present, the companion pushes to your phone via
+[Bark](https://github.com/Finb/Bark) — the "someone needs you" loop for when
+you are not in the app:
+
+- **需要审批** — the agent is stuck on a `session/request_permission` request;
+  the push carries the project name, session id and the tool call title. The
+  same pending request is never pushed twice.
+- **会话完成 / 会话失败** — a `session/prompt` turn ended; the failure push
+  includes the agent's error. A user-initiated `cancelled` turn does not push.
+
+`bark.url` overrides the default `https://api.day.app` (self-hosted Bark
+servers use this). Each trigger has its own switch — set
+`notifyOnApproval`/`notifyOnSessionEnd` to `false` to silence that type while
+keeping the other. Omitting the whole `bark` section, or leaving
+`deviceKey` empty, disables notifications entirely.
 
 ## Run
 

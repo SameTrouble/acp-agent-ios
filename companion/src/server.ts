@@ -2,6 +2,13 @@ import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
 import type { AcpClient, InitializeResult } from "./acp";
 import type { CompanionConfig } from "./config";
 import type { SessionManager } from "./session";
+import {
+  BarkNotifier,
+  classifyTurnEnd,
+  DISABLED_BARK,
+  type ApprovalToolCall,
+  type SessionRef,
+} from "./bark";
 import { SessionEventBuffer } from "./session-event-buffer";
 import {
   AppErrorCodes,
@@ -34,6 +41,8 @@ export interface CompanionServerOptions {
   acp: AcpClient;
   agentInfo: InitializeResult;
   sessions: SessionManager;
+  /** Test seam; defaults to a notifier built from the config's bark section. */
+  notifier?: BarkNotifier;
 }
 
 export class CompanionServer {
@@ -44,6 +53,7 @@ export class CompanionServer {
   private agentInfo: InitializeResult;
   private sessions: SessionManager;
   private events: SessionEventBuffer;
+  private notifier: BarkNotifier;
   /**
    * Outstanding agent→client request ids awaiting a client response. The value
    * is the request's session id (for the pending flag) or undefined for
@@ -57,11 +67,13 @@ export class CompanionServer {
     this.agentInfo = opts.agentInfo;
     this.sessions = opts.sessions;
     this.events = new SessionEventBuffer(opts.config.eventBufferCapacity);
+    this.notifier = opts.notifier ?? new BarkNotifier(opts.config.bark ?? DISABLED_BARK);
   }
 
   async listen(): Promise<void> {
     this.acp.setNotificationHandler(({ method, params }) => {
       this.sessions.handleNotification(method, params);
+      this.onAgentNotification(method, params);
       const cursor = this.recordEvent(method, params);
       this.broadcast({
         jsonrpc: "2.0",
@@ -72,8 +84,10 @@ export class CompanionServer {
     });
 
     // Agent→client requests (e.g. session/request_permission) are relayed to
-    // every client; the first response routed back wins (ADR-005).
+    // every client; the first response routed back wins (ADR-005). Bark
+    // observes the same request for the approval push (issue #10).
     this.acp.setRequestHandler(({ id, method, params }) => {
+      this.onAgentRequest(method, params);
       const sessionId = this.sessionIdFromParams(params);
       if (sessionId) this.sessions.setPendingApproval(sessionId, true);
       this.agentRequests.set(id, sessionId);
@@ -383,6 +397,69 @@ export class CompanionServer {
     return cursor;
   }
 
+  // --- Bark notification hooks -------------------------------------------------
+
+  /**
+   * A pending approval is announced once per request (dedup lives in the
+   * notifier). The request is still relayed to clients for answering.
+   */
+  private onAgentRequest(method: string, params: unknown): void {
+    if (method !== "session/request_permission") return;
+    if (typeof params !== "object" || params === null) return;
+    const p = params as { sessionId?: unknown; toolCall?: { toolCallId?: unknown; title?: unknown } };
+    const sessionId = p.sessionId;
+    const toolCall = p.toolCall;
+    if (typeof sessionId !== "string" || !toolCall || typeof toolCall.toolCallId !== "string") return;
+    const approval: ApprovalToolCall = {
+      toolCallId: toolCall.toolCallId,
+      ...(typeof toolCall.title === "string" ? { title: toolCall.title } : {}),
+    };
+    void this.notifier.notifyApproval(this.sessionRef(sessionId), approval);
+  }
+
+  /**
+   * A tool call reaching a terminal state means the approval is resolved (or
+   * will never be re-asked mid-turn); forget the dedup entry so a genuinely
+   * re-asked request can notify again.
+   */
+  private onAgentNotification(method: string, params: unknown): void {
+    if (method !== "session/update") return;
+    if (typeof params !== "object" || params === null) return;
+    const p = params as {
+      sessionId?: unknown;
+      update?: { sessionUpdate?: unknown; toolCallId?: unknown; status?: unknown };
+    };
+    const sessionId = p.sessionId;
+    const update = p.update;
+    if (typeof sessionId !== "string" || !update || update.sessionUpdate !== "tool_call_update") return;
+    if (update.status === "completed" || update.status === "failed") {
+      if (typeof update.toolCallId === "string") {
+        this.notifier.resolveApproval(sessionId, update.toolCallId);
+      }
+    }
+  }
+
+  /**
+   * A forwarded `session/prompt` resolving (or failing) ends the turn: push a
+   * success/failure notification. Stale pending approvals of the turn are
+   * forgotten regardless of the outcome.
+   */
+  private notifyTurnEnded(params: unknown, result: unknown, error: unknown): void {
+    const sessionId = this.sessionIdFromParams(params);
+    if (!sessionId) return;
+    this.notifier.clearSession(sessionId);
+    const outcome = classifyTurnEnd(result, error);
+    if (outcome.kind === "none") return;
+    void this.notifier.notifySessionEnded(this.sessionRef(sessionId), outcome);
+  }
+
+  private sessionRef(sessionId: string): SessionRef {
+    const session = this.sessions.get(sessionId);
+    return session ? { id: session.id, cwd: session.cwd } : { id: sessionId };
+  }
+
+  // --- end Bark notification hooks ---------------------------------------------
+
   // Buffers only earn their memory while a session can still be resumed. Ended
   // sessions are dropped so the footprint tracks live sessions, not the total
   // number of sessions this process has ever served.
@@ -426,9 +503,13 @@ export class CompanionServer {
       } else if (msg.method === "session/prompt") {
         const p = (params ?? {}) as { sessionId?: string };
         if (p.sessionId) this.sessions.touch(p.sessionId);
+        this.notifyTurnEnded(params, result, undefined);
       }
       this.send(ws, makeResponse(msg.id!, result));
     } catch (err) {
+      if (msg.method === "session/prompt") {
+        this.notifyTurnEnded(msg.params, undefined, err);
+      }
       if (err instanceof RpcError) {
         this.sendError(ws, msg.id ?? 0, err.code, err.message);
         return;

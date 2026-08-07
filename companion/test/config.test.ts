@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { defaultConfigPath, loadConfig, parseConfig } from "../src/config";
+import { DEFAULT_BARK_URL } from "../src/bark";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,6 +41,49 @@ describe("parseConfig", () => {
   test("rejects non-object config", () => {
     expect(() => parseConfig(null)).toThrow(/object/);
     expect(() => parseConfig("x")).toThrow(/object/);
+  });
+});
+
+describe("parseConfig bark", () => {
+  test("is absent when no bark section is given", () => {
+    const cfg = parseConfig({ tokens: ["t"] });
+    expect(cfg.bark).toBeUndefined();
+  });
+
+  test("parses a bark section with defaults", () => {
+    const cfg = parseConfig({ tokens: ["t"], bark: { deviceKey: "key-1" } });
+    expect(cfg.bark).toEqual({
+      deviceKey: "key-1",
+      url: DEFAULT_BARK_URL,
+      notifyOnApproval: true,
+      notifyOnSessionEnd: true,
+    });
+  });
+
+  test("honours url override and per-trigger switches", () => {
+    const cfg = parseConfig({
+      tokens: ["t"],
+      bark: { deviceKey: "key-1", url: "https://bark.example.com", notifyOnApproval: false, notifyOnSessionEnd: false },
+    });
+    expect(cfg.bark).toEqual({
+      deviceKey: "key-1",
+      url: "https://bark.example.com",
+      notifyOnApproval: false,
+      notifyOnSessionEnd: false,
+    });
+  });
+
+  test("an empty device key disables bark entirely", () => {
+    const cfg = parseConfig({ tokens: ["t"], bark: { deviceKey: "" } });
+    expect(cfg.bark).toBeUndefined();
+  });
+
+  test("rejects an invalid bark section", () => {
+    expect(() => parseConfig({ tokens: ["t"], bark: "nope" })).toThrow(/bark/);
+    expect(() => parseConfig({ tokens: ["t"], bark: { deviceKey: 42 } })).toThrow(/deviceKey/);
+    expect(() => parseConfig({ tokens: ["t"], bark: { deviceKey: "k", url: 42 } })).toThrow(/bark\.url/);
+    expect(() => parseConfig({ tokens: ["t"], bark: { deviceKey: "k", notifyOnApproval: "yes" } })).toThrow(/notifyOnApproval/);
+    expect(() => parseConfig({ tokens: ["t"], bark: { deviceKey: "k", notifyOnSessionEnd: 1 } })).toThrow(/notifyOnSessionEnd/);
   });
 });
 
