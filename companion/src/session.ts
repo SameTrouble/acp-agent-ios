@@ -12,12 +12,21 @@ export interface SessionInfo {
   lastActiveAt: number;
 }
 
+/** Cached session config from `session/new` / set / agent updates (issue #11). */
+export interface SessionConfigCache {
+  configOptions?: unknown;
+  modes?: unknown;
+}
+
 interface SessionStore {
   sessions: SessionInfo[];
+  /** Optional; older persistence files omit this. */
+  configs?: Record<string, SessionConfigCache>;
 }
 
 export class SessionManager {
   private sessions = new Map<string, SessionInfo>();
+  private configs = new Map<string, SessionConfigCache>();
   private persistencePath: string;
 
   constructor(persistencePath: string) {
@@ -57,6 +66,16 @@ export class SessionManager {
       };
       this.sessions.set(id, session);
     }
+
+    if (store.configs && typeof store.configs === "object") {
+      for (const [id, cache] of Object.entries(store.configs)) {
+        if (!cache || typeof cache !== "object") continue;
+        this.configs.set(id, {
+          ...(cache.configOptions !== undefined ? { configOptions: cache.configOptions } : {}),
+          ...(cache.modes !== undefined ? { modes: cache.modes } : {}),
+        });
+      }
+    }
   }
 
   list(): SessionInfo[] {
@@ -80,6 +99,26 @@ export class SessionManager {
 
   get(id: string): SessionInfo | undefined {
     return this.sessions.get(id);
+  }
+
+  /** Returns cached config fields to merge into `session.resume` responses. */
+  getConfig(id: string): SessionConfigCache {
+    return this.configs.get(id) ?? {};
+  }
+
+  /**
+   * Updates the cached config for a session. Pass only the fields that changed;
+   * `undefined` leaves the previous value alone, while an explicit value
+   * replaces it (including empty arrays).
+   */
+  setConfig(id: string, patch: SessionConfigCache): void {
+    if (!this.sessions.has(id)) return;
+    const prev = this.configs.get(id) ?? {};
+    const next: SessionConfigCache = { ...prev };
+    if ("configOptions" in patch) next.configOptions = patch.configOptions;
+    if ("modes" in patch) next.modes = patch.modes;
+    this.configs.set(id, next);
+    this.save();
   }
 
   markActive(id: string): void {
@@ -143,12 +182,44 @@ export class SessionManager {
     if (!s) return;
 
     s.lastActiveAt = Date.now();
+
+    const update = p.update;
+    if (update?.sessionUpdate === "config_option_update" && "configOptions" in update) {
+      this.setConfig(sessionId, { configOptions: update.configOptions });
+      return;
+    }
+    if (update?.sessionUpdate === "current_mode_update") {
+      const modeId =
+        typeof update.modeId === "string"
+          ? update.modeId
+          : typeof update.currentModeId === "string"
+            ? update.currentModeId
+            : undefined;
+      if (modeId) {
+        const prev = this.getConfig(sessionId);
+        const modes = prev.modes;
+        if (typeof modes === "object" && modes !== null) {
+          this.setConfig(sessionId, {
+            modes: { ...(modes as Record<string, unknown>), currentModeId: modeId },
+          });
+          return;
+        }
+      }
+    }
+
     this.save();
   }
 
   private save(): void {
     try {
-      const store: SessionStore = { sessions: Array.from(this.sessions.values()) };
+      const configs: Record<string, SessionConfigCache> = {};
+      for (const [id, cache] of this.configs) {
+        configs[id] = cache;
+      }
+      const store: SessionStore = {
+        sessions: Array.from(this.sessions.values()),
+        configs,
+      };
       mkdirSync(dirname(this.persistencePath), { recursive: true });
       writeFileSync(this.persistencePath, JSON.stringify(store, null, 2), "utf8");
     } catch {

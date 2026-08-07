@@ -66,6 +66,7 @@ struct SessionDetailView: View {
             PromptInputBar(
                 sessionId: sessionId,
                 availableCommands: conversation.availableCommands,
+                configChipSummary: conversation.configChipSummary,
                 canCancel: conversation.canCancel,
                 onCancel: cancel
             )

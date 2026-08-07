@@ -362,6 +362,59 @@ describe("session.resume", () => {
     expect((response as { result?: { stopReason: string } }).result?.stopReason).toBe("end_turn");
     ws.close();
   }, 10000);
+
+  test("resume returns cached configOptions from session/new", async () => {
+    const ws = connect();
+    await waitOpen(ws);
+    const q = makeQueue(ws);
+    send(ws, { jsonrpc: "2.0", id: 1, method: "auth", params: { token: "good-token" } });
+    await nextMessage(q);
+
+    send(ws, { jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: "/proj/cfg" } });
+    const newMsg = (await nextMessage(q)) as {
+      result?: { sessionId: string; configOptions?: Array<{ id: string; currentValue: string }> };
+    };
+    const sessionId = newMsg.result!.sessionId;
+    expect(newMsg.result?.configOptions?.[0]?.id).toBe("model");
+
+    send(ws, { jsonrpc: "2.0", id: 3, method: "session.resume", params: { sessionId } });
+    const resumeMsg = (await nextMessage(q)) as {
+      result?: { sessionId: string; configOptions?: Array<{ id: string; currentValue: string }> };
+    };
+    expect(resumeMsg.result?.sessionId).toBe(sessionId);
+    expect(resumeMsg.result?.configOptions?.[0]?.currentValue).toBe("model-1");
+    ws.close();
+  });
+
+  test("set_config_option updates the resume cache", async () => {
+    const ws = connect();
+    await waitOpen(ws);
+    const q = makeQueue(ws);
+    send(ws, { jsonrpc: "2.0", id: 1, method: "auth", params: { token: "good-token" } });
+    await nextMessage(q);
+
+    send(ws, { jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: "/proj/cfg2" } });
+    const newMsg = (await nextMessage(q)) as { result?: { sessionId: string } };
+    const sessionId = newMsg.result!.sessionId;
+
+    send(ws, {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session/set_config_option",
+      params: { sessionId, configId: "model", value: "model-2" },
+    });
+    const setMsg = (await nextMessage(q)) as {
+      result?: { configOptions?: Array<{ id: string; currentValue: string }> };
+    };
+    expect(setMsg.result?.configOptions?.find((o) => o.id === "model")?.currentValue).toBe("model-2");
+
+    send(ws, { jsonrpc: "2.0", id: 4, method: "session.resume", params: { sessionId } });
+    const resumeMsg = (await nextMessage(q)) as {
+      result?: { configOptions?: Array<{ id: string; currentValue: string }> };
+    };
+    expect(resumeMsg.result?.configOptions?.find((o) => o.id === "model")?.currentValue).toBe("model-2");
+    ws.close();
+  });
 });
 
 describe("persistence across restarts", () => {

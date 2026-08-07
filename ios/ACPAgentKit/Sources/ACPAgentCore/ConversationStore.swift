@@ -51,6 +51,7 @@ final class ConversationStore: ObservableObject {
         mutateConversation(sessionId) { conv in
             conv.recovery = response.recovery
             conv.recoveryReason = response.reason
+            conv.applySessionConfig(configOptions: response.configOptions, modes: response.modes)
 
             for event in response.events {
                 if let request = event.request {
@@ -65,6 +66,43 @@ final class ConversationStore: ObservableObject {
         }
 
         return response
+    }
+
+    /// Sets a session config option via `session/set_config_option`. Allowed
+    /// while the agent is generating. The response's full `configOptions`
+    /// list replaces local state. When only legacy `modes` exist and the
+    /// synthetic mode option is chosen, falls back to `session/set_mode`.
+    @discardableResult
+    func setConfigOption(sessionId: String, configId: String, value: String) async throws -> [SessionConfigOption] {
+        guard isConnected() else {
+            throw ConnectionError.notConnected
+        }
+
+        let current = conversation(for: sessionId)
+        // Prefer configOptions; only the legacy modes API uses set_mode.
+        if current.configOptions.isEmpty, current.modes != nil {
+            let params: [String: AnyCodable] = [
+                "sessionId": AnyCodable(sessionId),
+                "modeId": AnyCodable(value),
+            ]
+            _ = try await rpc.request("session/set_mode", params: params)
+            mutateConversation(sessionId) { conv in
+                conv.applyCurrentMode(value)
+            }
+            return conversation(for: sessionId).selectableConfigOptions
+        }
+
+        let params: [String: AnyCodable] = [
+            "sessionId": AnyCodable(sessionId),
+            "configId": AnyCodable(configId),
+            "value": AnyCodable(value),
+        ]
+        let result = try await rpc.request("session/set_config_option", params: params)
+        let response = try result.decode(SetConfigOptionResponse.self)
+        mutateConversation(sessionId) { conv in
+            conv.replaceConfigOptions(response.configOptions)
+        }
+        return response.configOptions
     }
 
     /// Sends a text prompt to the session. The message is optimistically

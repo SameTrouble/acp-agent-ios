@@ -232,9 +232,9 @@ import Testing
 
     @Test func unrecognisedVariantDecodesAsUnsupported() throws {
         let notification = try decode(#"""
-        {"sessionId":"s1","update":{"sessionUpdate":"current_mode_update","currentModeId":"build"}}
+        {"sessionId":"s1","update":{"sessionUpdate":"some_future_variant","payload":1}}
         """#)
-        #expect(notification.update == .unsupported("current_mode_update"))
+        #expect(notification.update == .unsupported("some_future_variant"))
     }
 
     @Test func resourceAndLinkContentBlocksCarryDisplayText() throws {

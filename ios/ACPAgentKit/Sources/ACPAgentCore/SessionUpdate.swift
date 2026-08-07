@@ -102,6 +102,12 @@ public enum SessionUpdate: Equatable, Sendable {
     /// (`available_commands_update`, live-verified in ADR-005). Replaces the
     /// previous list wholesale; the UI renders it as the `/` menu.
     case availableCommands([AvailableCommand])
+    /// Complete session config state (`config_option_update`). Replaces the
+    /// previous list wholesale; feeds the input-bar config chip (issue #11).
+    case configOptions([SessionConfigOption])
+    /// Legacy mode switch (`current_mode_update`). Updates `modes` when the
+    /// agent only advertises the older modes API.
+    case currentMode(modeId: String)
     /// Elicitation/probe note (issue #6): opencode's ACP mode does NOT appear
     /// to emit `elicitation/create` — all unrecognised `sessionUpdate`
     /// variants fall through here and are silently dropped. The UI renders
@@ -140,6 +146,9 @@ extension SessionUpdateNotification {
         case locations
         case entries
         case availableCommands
+        case configOptions
+        case modeId
+        case currentModeId
     }
 
     public init(from decoder: Decoder) throws {
@@ -169,6 +178,18 @@ extension SessionUpdateNotification {
         case "available_commands_update":
             let commands = try updateContainer.decode([AvailableCommand].self, forKey: .availableCommands)
             update = .availableCommands(commands)
+        case "config_option_update":
+            let list = try updateContainer.decode(SessionConfigOptionList.self, forKey: .configOptions)
+            update = .configOptions(list.options)
+        case "current_mode_update":
+            // Spec field is `modeId`; older probes used `currentModeId`.
+            if let modeId = try updateContainer.decodeIfPresent(String.self, forKey: .modeId) {
+                update = .currentMode(modeId: modeId)
+            } else if let modeId = try updateContainer.decodeIfPresent(String.self, forKey: .currentModeId) {
+                update = .currentMode(modeId: modeId)
+            } else {
+                update = .unsupported(variantRaw)
+            }
         default:
             update = .unsupported(variantRaw)
         }
@@ -204,6 +225,12 @@ extension SessionUpdateNotification {
         case .availableCommands(let commands):
             try updateContainer.encode("available_commands_update", forKey: .sessionUpdate)
             try updateContainer.encode(commands, forKey: .availableCommands)
+        case .configOptions(let options):
+            try updateContainer.encode("config_option_update", forKey: .sessionUpdate)
+            try updateContainer.encode(options, forKey: .configOptions)
+        case .currentMode(let modeId):
+            try updateContainer.encode("current_mode_update", forKey: .sessionUpdate)
+            try updateContainer.encode(modeId, forKey: .modeId)
         case .unsupported(let raw):
             try updateContainer.encode(raw, forKey: .sessionUpdate)
         }

@@ -21,6 +21,7 @@ struct PromptInputBar: View {
 
     let sessionId: String
     let availableCommands: [AvailableCommand]
+    let configChipSummary: String?
     let canCancel: Bool
     let onCancel: () -> Void
 
@@ -32,6 +33,7 @@ struct PromptInputBar: View {
     @State private var fileSearchTask: Task<Void, Never>?
     /// Set after picking a command, so the placeholder invites arguments.
     @State private var argumentPlaceholder: String?
+    @State private var showConfigSheet = false
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -44,6 +46,11 @@ struct PromptInputBar: View {
         }
         .onChange(of: text) { _, newValue in
             updateTrigger(for: newValue)
+        }
+        .sheet(isPresented: $showConfigSheet) {
+            SessionConfigSheet(sessionId: sessionId)
+                .presentationDetents([.medium, .large])
+                .environmentObject(client)
         }
     }
 
@@ -92,6 +99,12 @@ struct PromptInputBar: View {
 
     private var inputRow: some View {
         HStack(spacing: 8) {
+            if let summary = configChipSummary {
+                SessionConfigChip(summary: summary) {
+                    showConfigSheet = true
+                }
+            }
+
             TextField(placeholder, text: $text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .focused($isFocused)
@@ -353,6 +366,7 @@ struct PromptInputBar: View {
             AvailableCommand(name: "code-review", description: "Review the changes since a fixed point."),
             AvailableCommand(name: "tdd", description: "Test-driven development."),
         ],
+        configChipSummary: "Claude",
         canCancel: false,
         onCancel: {}
     )
