@@ -1,0 +1,33 @@
+# ACP companion — WebSocket bridge to the coding agent.
+#
+# Install:   sudo cp acp-companion.service /etc/systemd/system/
+#            sudo systemctl daemon-reload
+#            sudo systemctl enable --now acp-companion
+# Logs:      journalctl -u acp-companion -f
+#
+# The binary reads its config from the service user's
+# ~/.config/acp-agent/companion.json by default. To point it elsewhere,
+# append the config path: ExecStart=/usr/local/bin/acp-companion /etc/acp/companion.json
+
+[Unit]
+Description=ACP companion (WebSocket bridge to coding agent)
+After=network-online.target
+Wants=network-online.target
+# Crash-restart is bounded: after 10 failures within 5 minutes systemd stops
+# retrying, so a broken config cannot flap forever. `systemctl reset-failed`
+# clears the counter once the problem is fixed.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=acp
+Group=acp
+ExecStart=/usr/local/bin/acp-companion
+Restart=always
+RestartSec=2
+# stdout/stderr go to the journal by default, so `journalctl -u acp-companion`
+# shows both companion logs and the agent's stderr lines.
+
+[Install]
+WantedBy=multi-user.target

@@ -135,6 +135,18 @@ bun install
 bun run start /path/to/companion.json
 ```
 
+`--version` (or `-v`) prints the companion version and exits.
+
+## Deploy to a Linux server
+
+```sh
+bun run build:linux        # cross-compiles dist/acp-companion-linux-x64
+```
+
+The single binary runs without bun/node on the server. See `DEPLOY.md`
+for the full guide — systemd unit, `~/.config` layout, and EasyTier
+networking — and `deploy/acp-companion.service` for the unit file.
+
 ## Test
 
 ```sh
