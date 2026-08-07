@@ -2,13 +2,19 @@ import { AcpClient } from "./acp";
 import { loadConfig } from "./config";
 import { CompanionServer } from "./server";
 import { SessionManager } from "./session";
+import { isVersionRequest, versionLine } from "./version";
 
 function log(level: string, message: string): void {
   console.log(`[${new Date().toISOString()}] ${level}: ${message}`);
 }
 
 async function main(): Promise<void> {
-  const configArg = process.argv[2];
+  const args = process.argv.slice(2);
+  if (isVersionRequest(args)) {
+    console.log(versionLine());
+    return;
+  }
+  const configArg = args[0];
   const config = loadConfig(configArg);
 
   const sessions = new SessionManager(config.sessionStorePath);

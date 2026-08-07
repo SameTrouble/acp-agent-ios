@@ -8,7 +8,8 @@
     "dev": "bun run src/main.ts",
     "start": "bun run src/main.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:linux": "bun build --compile --minify --target=bun-linux-x64 src/main.ts --outfile dist/acp-companion-linux-x64"
   },
   "devDependencies": {
     "@types/bun": "latest",
