@@ -96,7 +96,7 @@ bun install
 bun run start /path/to/companion.json
 ```
 
-Config format: see `companion/README.md` §Configuration or
+Config format: see the root `README.md` §companion 配置 or
 `companion/config.example.json`. Default config path:
 `~/.config/acp-agent/companion.json`.
 

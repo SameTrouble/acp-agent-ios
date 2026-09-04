@@ -153,7 +153,7 @@ ACP Agent 本身不注册 APNs 推送 —— 通知通过 **Bark** 第三方 app
 
 1. 手机 App Store 装 Bark，打开后复制设备 key
 2. 在 companion 的 `companion.json` 里配好 `bark.deviceKey`
-   （详见 `companion/README.md`）
+   （详见根目录 `README.md` §Bark 通知配置）
 3. 重启 companion 服务
 4. 发起一个需要审批的任务，Bark 会弹出通知 → 点通知 → 跳到 ACP Agent → 在 app 里审批
 
